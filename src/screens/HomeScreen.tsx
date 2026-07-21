@@ -9,21 +9,74 @@ import {
   ActivityIndicator,
   SafeAreaView,
   StatusBar,
-  Linking
+  Linking,
+  Image,
+  ScrollView,
+  Switch
 } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CategoryPill } from '../components/CategoryPill';
 import { ResultCard } from '../components/ResultCard';
 import { SearchResult, parseHTML } from '../utils/parser';
-import { resolveAllDomains } from '../utils/resolver';
+import { resolveAllDomains, ROTATORS } from '../utils/resolver';
+import {
+  getTrendingMovies,
+  getTrendingTVShows,
+  getBollywoodMovies,
+  getPersonalizedTMDBRecommendations,
+  TMDBMediaItem,
+  getTMDBConfig
+} from '../utils/tmdb';
+import {
+  getTrendingAnime,
+  getPopularAnime,
+  getPersonalizedAnimeRecommendations,
+  AniListAnimeItem
+} from '../utils/anilist';
 
 type SearchTask = {
   siteKey: string;
   searchUrl: string;
 };
 
+type WatchlistItem = {
+  id: number;
+  title: string;
+  posterUrl: string;
+  mediaType: 'movie' | 'tv' | 'anime';
+};
+
 export default function HomeScreen() {
+  // Navigation & Tab State
+  const [currentTab, setCurrentTab] = useState<'home' | 'me'>('home');
+
+  // Theme Accent State
+  const [accentColor, setAccentColor] = useState('#FF2D55'); // Default: Nothing Red
+
+  // Settings & Credentials States
+  const [tmdbKey, setTmdbKey] = useState('');
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [customApi, setCustomApi] = useState('');
+  const [customImage, setCustomImage] = useState('');
+
+  // Watchlist & History States
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [clickHistoryTMDB, setClickHistoryTMDB] = useState<{ id: number; type: 'movie' | 'tv' }[]>([]);
+  const [clickHistoryAnime, setClickHistoryAnime] = useState<number[]>([]);
+
+  // Diagnostics States
+  const [pingStatus, setPingStatus] = useState<Record<string, { status: 'idle' | 'checking' | 'ok' | 'error'; latency?: number }>>({});
+
+  // Recommendation Feeds States
+  const [feedsLoading, setFeedsLoading] = useState(false);
+  const [forYouFeed, setForYouFeed] = useState<(TMDBMediaItem | AniListAnimeItem)[]>([]);
+  const [trendingHollywood, setTrendingHollywood] = useState<TMDBMediaItem[]>([]);
+  const [bollywoodHits, setBollywoodHits] = useState<TMDBMediaItem[]>([]);
+  const [trendingAnime, setTrendingAnime] = useState<AniListAnimeItem[]>([]);
+
+  // Search Core States
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | 'hollywood' | 'bollywood' | 'anime'>('all');
   const [resolvedDomains, setResolvedDomains] = useState<Record<string, string>>({});
@@ -31,32 +84,190 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Initializing...');
   const [searchTasks, setSearchTasks] = useState<SearchTask[]>([]);
-  const [trending, setTrending] = useState<SearchResult[]>([]);
   const searchId = useRef(0);
   const resultsCountRef = useRef(0);
 
+  // Initialize
   useEffect(() => {
+    loadSettings();
     loadDomains();
   }, []);
+
+  const loadSettings = async () => {
+    try {
+      let key = await AsyncStorage.getItem('@movieshound_tmdb_key') || '';
+      if (!key || key.trim() === '') {
+        key = process.env.EXPO_PUBLIC_TMDB_API_KEY || ''; // Load from local .env fallback
+      }
+      const proxy = await AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled') === 'true';
+      const api = await AsyncStorage.getItem('@movieshound_tmdb_proxy_api') || '';
+      const img = await AsyncStorage.getItem('@movieshound_tmdb_proxy_image') || '';
+      const accent = await AsyncStorage.getItem('@movieshound_accent_color') || '#FF2D55';
+      
+      setTmdbKey(key);
+      setProxyEnabled(proxy);
+      setCustomApi(api);
+      setCustomImage(img);
+      setAccentColor(accent);
+
+      const listRaw = await AsyncStorage.getItem('@movieshound_watchlist');
+      if (listRaw) setWatchlist(JSON.parse(listRaw));
+
+      const histTMDBRaw = await AsyncStorage.getItem('@movieshound_history_clicks_tmdb');
+      if (histTMDBRaw) setClickHistoryTMDB(JSON.parse(histTMDBRaw));
+
+      const histAnimeRaw = await AsyncStorage.getItem('@movieshound_history_clicks_anilist');
+      if (histAnimeRaw) setClickHistoryAnime(JSON.parse(histAnimeRaw));
+    } catch (e) {
+      console.warn('Failed to load settings from storage:', e);
+    }
+  };
+
+  // Whenever TMDB credentials/settings or history load/change, trigger feed update
+  useEffect(() => {
+    loadFeeds();
+  }, [tmdbKey, proxyEnabled, customApi, customImage]);
 
   const loadDomains = async (force: boolean = false) => {
     const domains = await resolveAllDomains(setStatusMessage, force);
     setResolvedDomains(domains);
-    loadTrending(domains);
   };
 
-  const loadTrending = (domains: Record<string, string>) => {
-    const defaultTrending: SearchResult[] = [
-      { title: "Peaky Blinders Season 1-6 [Hindi + English]", link: `${domains.vegamovies || 'https://vegamovies.navy'}/download-peaky-blinders-season-1-6-hindi-org-480p-720p-1080p-bluray/`, siteName: "Vegamovies", category: "hollywood" },
-      { title: "Oppenheimer (2023) [Hindi + English] 4K", link: `${domains.moviesmod || 'https://moviesmod.at'}/download-oppenheimer-2023-hindi-english/`, siteName: "MoviesMod", category: "hollywood" },
-      { title: "Demon Slayer: Kimetsu no Yaiba - Hashira Training Arc", link: `${domains.gokuhd || 'https://gokuhd.com'}/demon-slayer-hashira-training/`, siteName: "GokuHD", category: "anime" },
-      { title: "Jawan (2023) [Hindi] Bluray", link: `${domains.topmovies || 'https://moviesleech.asia'}/jawan-2023-hindi-download/`, siteName: "TopMovies", category: "bollywood" }
-    ];
-    setTrending(defaultTrending);
+  const loadFeeds = async () => {
+    try {
+      setFeedsLoading(true);
+      const config = await getTMDBConfig();
+      
+      // Load Anime trends (always works, no API key needed)
+      const animeTrends = await getTrendingAnime();
+      setTrendingAnime(animeTrends);
+
+      // Load TMDB items if API Key is configured
+      if (config.apiKey) {
+        try {
+          const hollywood = await getTrendingMovies();
+          setTrendingHollywood(hollywood);
+
+          const bollywood = await getBollywoodMovies();
+          setBollywoodHits(bollywood);
+
+          // Get personalized feeds
+          const personalTMDB = await getPersonalizedTMDBRecommendations(clickHistoryTMDB);
+          const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
+
+          // Interleave recommendations for a combined "For You" list
+          const combined: (TMDBMediaItem | AniListAnimeItem)[] = [];
+          const maxLen = Math.max(personalTMDB.length, personalAnime.length);
+          for (let i = 0; i < maxLen; i++) {
+            if (personalTMDB[i]) combined.push(personalTMDB[i]);
+            if (personalAnime[i]) combined.push(personalAnime[i]);
+          }
+          setForYouFeed(combined);
+        } catch (tmdbErr) {
+          console.warn('Failed to fetch TMDB feeds (could be bad key or proxy block):', tmdbErr);
+          // Default For You to Anime if TMDB fails
+          const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
+          setForYouFeed(personalAnime);
+        }
+      } else {
+        // No TMDB Key, recommendation feed shows only anime
+        const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
+        setForYouFeed(personalAnime);
+      }
+    } catch (e) {
+      console.warn('Error loading recommendations feeds:', e);
+    } finally {
+      setFeedsLoading(false);
+    }
   };
 
-  const handleSearchSubmit = () => {
-    if (!query.trim()) return;
+  // Watchlist Actions
+  const toggleWatchlist = async (item: WatchlistItem) => {
+    try {
+      let list = [...watchlist];
+      const exists = list.some(i => i.id === item.id && i.mediaType === item.mediaType);
+      if (exists) {
+        list = list.filter(i => !(i.id === item.id && i.mediaType === item.mediaType));
+      } else {
+        list.push(item);
+      }
+      await AsyncStorage.setItem('@movieshound_watchlist', JSON.stringify(list));
+      setWatchlist(list);
+    } catch (e) {
+      console.warn('Failed to toggle watchlist:', e);
+    }
+  };
+
+  // Click Tracking Actions
+  const trackMediaClick = async (id: number, mediaType: 'movie' | 'tv' | 'anime') => {
+    try {
+      if (mediaType === 'anime') {
+        let history = [id, ...clickHistoryAnime.filter(x => x !== id)].slice(0, 10);
+        await AsyncStorage.setItem('@movieshound_history_clicks_anilist', JSON.stringify(history));
+        setClickHistoryAnime(history);
+      } else {
+        const entry = { id, type: mediaType };
+        let history = [entry, ...clickHistoryTMDB.filter(x => x.id !== id)].slice(0, 10);
+        await AsyncStorage.setItem('@movieshound_history_clicks_tmdb', JSON.stringify(history));
+        setClickHistoryTMDB(history);
+      }
+      loadFeeds();
+    } catch (e) {
+      console.warn('Failed to track click:', e);
+    }
+  };
+
+  // Save Settings to Storage
+  const updateSetting = async (key: string, value: string) => {
+    try {
+      await AsyncStorage.setItem(key, value);
+      if (key === '@movieshound_tmdb_key') setTmdbKey(value);
+      else if (key === '@movieshound_tmdb_proxy_enabled') setProxyEnabled(value === 'true');
+      else if (key === '@movieshound_tmdb_proxy_api') setCustomApi(value);
+      else if (key === '@movieshound_tmdb_proxy_image') setCustomImage(value);
+      else if (key === '@movieshound_accent_color') {
+        setAccentColor(value);
+      }
+    } catch (e) {
+      console.warn('Failed saving setting:', e);
+    }
+  };
+
+  // Ping Diagnostics
+  const runPingCheck = async (key: string, url: string) => {
+    setPingStatus(prev => ({ ...prev, [key]: { status: 'checking' } }));
+    const startTime = Date.now();
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+      await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(id);
+      
+      const latency = Date.now() - startTime;
+      setPingStatus(prev => ({ ...prev, [key]: { status: 'ok', latency } }));
+    } catch (e) {
+      setPingStatus(prev => ({ ...prev, [key]: { status: 'error' } }));
+    }
+  };
+
+  // Clear History Utility
+  const clearHistory = async () => {
+    await AsyncStorage.removeItem('@movieshound_history_clicks_tmdb');
+    await AsyncStorage.removeItem('@movieshound_history_clicks_anilist');
+    setClickHistoryTMDB([]);
+    setClickHistoryAnime([]);
+    loadFeeds();
+  };
+
+  // Core Search Submit Action
+  const handleSearchSubmit = (searchQuery: string = query, searchCategory: typeof category = category) => {
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) return;
+    
+    // Switch to Home tab immediately if searching from Settings/Watchlist
+    setCurrentTab('home');
+
     searchId.current += 1;
     const currentId = searchId.current;
 
@@ -67,47 +278,47 @@ export default function HomeScreen() {
 
     const tasks: SearchTask[] = [];
 
-    if (category === 'all' || category === 'hollywood') {
+    if (searchCategory === 'all' || searchCategory === 'hollywood') {
       if (resolvedDomains.vegamovies) {
         tasks.push({
           siteKey: 'Vegamovies',
-          searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(trimmedQuery)}`
         });
       }
       if (resolvedDomains.moviesmod) {
         tasks.push({
           siteKey: 'MoviesMod',
-          searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(trimmedQuery)}`
         });
       }
     }
 
-    if (category === 'all' || category === 'bollywood') {
+    if (searchCategory === 'all' || searchCategory === 'bollywood') {
       if (resolvedDomains.rogmovies) {
         tasks.push({
           siteKey: 'RogMovies',
-          searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(trimmedQuery)}`
         });
       }
       if (resolvedDomains.topmovies) {
         tasks.push({
           siteKey: 'TopMovies',
-          searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(trimmedQuery)}`
         });
       }
     }
 
-    if (category === 'all' || category === 'anime') {
+    if (searchCategory === 'all' || searchCategory === 'anime') {
       if (resolvedDomains.gokuhd) {
         tasks.push({
           siteKey: 'GokuHD',
-          searchUrl: `${resolvedDomains.gokuhd}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.gokuhd}/?s=${encodeURIComponent(trimmedQuery)}`
         });
       }
       if (resolvedDomains.animeflix) {
         tasks.push({
           siteKey: 'Animeflix',
-          searchUrl: `${resolvedDomains.animeflix}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.animeflix}/?s=${encodeURIComponent(trimmedQuery)}`
         });
       }
     }
@@ -153,82 +364,373 @@ export default function HomeScreen() {
     }
   };
 
+  // Horizontal Feed Card Builder
+  const renderFeedCard = (item: any, type: 'movie' | 'tv' | 'anime') => {
+    const isSaved = watchlist.some(i => i.id === item.id && i.mediaType === type);
+    return (
+      <View key={`${type}-${item.id}`} style={styles.feedCard}>
+        <TouchableOpacity
+          onPress={() => {
+            trackMediaClick(item.id, type);
+            setQuery(item.title);
+            if (type === 'anime') {
+              setCategory('anime');
+              handleSearchSubmit(item.title, 'anime');
+            } else {
+              setCategory('all');
+              handleSearchSubmit(item.title, 'all');
+            }
+          }}
+          activeOpacity={0.8}
+        >
+          <Image source={{ uri: item.posterUrl }} style={styles.feedPoster} />
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.feedCardBookmark}
+          onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: type })}
+        >
+          <Text style={[styles.bookmarkStar, isSaved && { color: accentColor }]}>
+            {isSaved ? '★' : '☆'}
+          </Text>
+        </TouchableOpacity>
+
+        <Text style={styles.feedCardTitle} numberOfLines={1}>
+          {item.title.toUpperCase()}
+        </Text>
+        <Text style={styles.feedCardSubtitle}>
+          {item.releaseDate} • {item.rating ? `${item.rating.toFixed(1)} ★` : 'N/A'}
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
-      
-      {/* Brand Header */}
+
+      {/* Header Bar */}
       <View style={styles.header}>
         <Text style={styles.brandTitle}>MOVIESHOUND</Text>
         <TouchableOpacity onPress={() => loadDomains(true)} style={styles.statusRow}>
-          <View style={[styles.statusDot, Object.keys(resolvedDomains).length > 0 ? styles.dotGreen : styles.dotRed]} />
+          <View style={[styles.statusDot, Object.keys(resolvedDomains).length > 0 ? { backgroundColor: accentColor } : styles.dotRed]} />
           <Text style={styles.brandSubtitle}>
             {Object.keys(resolvedDomains).length > 0 ? 'SYNCED' : 'OFFLINE'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Search Input Container */}
-      <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="SEARCH MULTIPLE SITES..."
-          placeholderTextColor="rgba(255,255,255,0.3)"
-          value={query}
-          onChangeText={setQuery}
-          onSubmitEditing={handleSearchSubmit}
-          autoCorrect={false}
-          returnKeyType="search"
-        />
-        <TouchableOpacity style={styles.searchButton} onPress={handleSearchSubmit}>
-          <Text style={styles.searchButtonText}>GO</Text>
+      {/* Main Content Area */}
+      {currentTab === 'home' ? (
+        <View style={styles.tabContent}>
+          {/* Search Input Box */}
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="SEARCH MULTIPLE SITES..."
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              value={query}
+              onChangeText={setQuery}
+              onSubmitEditing={() => handleSearchSubmit()}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            {query.length > 0 && (
+              <TouchableOpacity style={styles.clearSearchInput} onPress={() => { setQuery(''); setResults([]); }}>
+                <Text style={styles.clearSearchInputText}>×</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.searchButton} onPress={() => handleSearchSubmit()}>
+              <Text style={styles.searchButtonText}>GO</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Category Select Pills */}
+          <View style={styles.categoryRow}>
+            {(['all', 'hollywood', 'bollywood', 'anime'] as const).map((cat) => (
+              <CategoryPill
+                key={cat}
+                title={cat}
+                isActive={category === cat}
+                onPress={() => setCategory(cat)}
+              />
+            ))}
+          </View>
+
+          {/* Status Indicators */}
+          {statusMessage ? (
+            <View style={styles.statusBox}>
+              <Text style={[styles.statusText, { color: accentColor }]}>{statusMessage.toUpperCase()}</Text>
+            </View>
+          ) : null}
+
+          {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
+
+          {/* Dynamic Feed Display */}
+          {query.trim().length > 0 || results.length > 0 ? (
+            /* Search Results View */
+            <FlatList
+              data={results}
+              keyExtractor={(item) => item.link}
+              contentContainerStyle={styles.listContent}
+              renderItem={({ item }) => (
+                <ResultCard item={item} onPress={() => openLink(item.link)} />
+              )}
+              ListEmptyComponent={
+                !loading ? (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
+                  </View>
+                ) : null
+              }
+            />
+          ) : (
+            /* Recommendations Mode */
+            <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
+              {feedsLoading && (
+                <ActivityIndicator size="small" color={accentColor} style={styles.feedSpinner} />
+              )}
+
+              {/* Personal Recommendation Lane */}
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>FOR YOU (PERSONALIZED)</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {forYouFeed.length > 0 ? (
+                    forYouFeed.map(item => {
+                      const type = 'rating' in item && item.rating > 10 ? 'anime' : ('mediaType' in item ? item.mediaType : 'movie');
+                      return renderFeedCard(item, type);
+                    })
+                  ) : (
+                    <Text style={styles.laneEmptyText}>
+                      NO HISTORY YET. WATCH OR SEARCH ITEMS TO POPULATE.
+                    </Text>
+                  )}
+                </ScrollView>
+              </View>
+
+              {/* Hollywood Trends */}
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>TRENDING HOLLYWOOD</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {tmdbKey ? (
+                    trendingHollywood.map(item => renderFeedCard(item, 'movie'))
+                  ) : (
+                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
+                  )}
+                </ScrollView>
+              </View>
+
+              {/* Bollywood Selection */}
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {tmdbKey ? (
+                    bollywoodHits.map(item => renderFeedCard(item, 'movie'))
+                  ) : (
+                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
+                  )}
+                </ScrollView>
+              </View>
+
+              {/* Anime Trends */}
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>TRENDING ANIME</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {trendingAnime.map(item => renderFeedCard(item, 'anime'))}
+                </ScrollView>
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      ) : (
+        /* Settings Tab (Me tab) */
+        <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
+          <Text style={styles.sectionTitle}>MY WATCHLIST</Text>
+          {watchlist.length > 0 ? (
+            <View style={styles.watchlistGrid}>
+              {watchlist.map(item => (
+                <View key={`${item.mediaType}-${item.id}`} style={styles.watchlistItem}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setQuery(item.title);
+                      setCategory(item.mediaType === 'anime' ? 'anime' : 'all');
+                      handleSearchSubmit(item.title, item.mediaType === 'anime' ? 'anime' : 'all');
+                    }}
+                  >
+                    <Image source={{ uri: item.posterUrl }} style={styles.watchlistPoster} />
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.watchlistRemove} 
+                    onPress={() => toggleWatchlist(item)}
+                  >
+                    <Text style={styles.watchlistRemoveText}>REMOVE</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.watchlistTitle} numberOfLines={1}>
+                    {item.title.toUpperCase()}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.emptySettingsText}>WATCHLIST IS EMPTY</Text>
+          )}
+
+          <View style={styles.divider} />
+
+          <Text style={styles.sectionTitle}>THEME CUSTOMIZATION</Text>
+          <View style={styles.accentContainer}>
+            <Text style={styles.accentLabel}>ACCENT COLOR</Text>
+            <View style={styles.accentRow}>
+              {(['#FF2D55', '#00FF88', '#FFFFFF'] as const).map(color => (
+                <TouchableOpacity
+                  key={color}
+                  style={[
+                    styles.accentPill, 
+                    { borderColor: color }, 
+                    accentColor === color && { backgroundColor: color }
+                  ]}
+                  onPress={() => updateSetting('@movieshound_accent_color', color)}
+                >
+                  <Text style={[
+                    styles.accentPillText, 
+                    accentColor === color ? { color: '#0A0A0C' } : { color }
+                  ]}>
+                    {color === '#FF2D55' ? 'RED' : color === '#00FF88' ? 'GREEN' : 'MONO'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          <Text style={styles.sectionTitle}>TMDB CREDENTIALS</Text>
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>TMDB API KEY</Text>
+            <TextInput
+              style={styles.settingsInput}
+              value={tmdbKey}
+              onChangeText={val => updateSetting('@movieshound_tmdb_key', val)}
+              placeholder="ENTER API KEY"
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry={true}
+            />
+          </View>
+
+          <View style={styles.switchGroup}>
+            <View>
+              <Text style={styles.switchLabel}>BYPASS INDIA ISP BLOCK</Text>
+              <Text style={styles.switchDesc}>Proxy TMDB requests to unblock connections</Text>
+            </View>
+            <Switch
+              value={proxyEnabled}
+              onValueChange={val => updateSetting('@movieshound_tmdb_proxy_enabled', val ? 'true' : 'false')}
+              trackColor={{ false: '#1A1A1C', true: accentColor }}
+              thumbColor="#FFFFFF"
+            />
+          </View>
+
+          {proxyEnabled && (
+            <View style={styles.proxyFields}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>CUSTOM API PROXY URL</Text>
+                <TextInput
+                  style={styles.settingsInput}
+                  value={customApi}
+                  onChangeText={val => updateSetting('@movieshound_tmdb_proxy_api', val)}
+                  placeholder="https://tmdb-api.wmdb.tv"
+                  placeholderTextColor="rgba(255,255,255,0.2)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>CUSTOM IMAGE PROXY URL</Text>
+                <TextInput
+                  style={styles.settingsInput}
+                  value={customImage}
+                  onChangeText={val => updateSetting('@movieshound_tmdb_proxy_image', val)}
+                  placeholder="https://images.tmdb.one/t/p"
+                  placeholderTextColor="rgba(255,255,255,0.2)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+            </View>
+          )}
+
+          <View style={styles.divider} />
+
+          <Text style={styles.sectionTitle}>DIAGNOSTICS & SCRAPERS HEALTH</Text>
+          <View style={styles.diagnosticsContainer}>
+            {Object.entries(resolvedDomains).map(([key, domain]) => (
+              <View key={key} style={styles.diagnosticRow}>
+                <View style={styles.diagnosticDetails}>
+                  <Text style={styles.diagnosticName}>{key.toUpperCase()}</Text>
+                  <Text style={styles.diagnosticUrl} numberOfLines={1}>{domain}</Text>
+                </View>
+                <View style={styles.diagnosticActions}>
+                  {pingStatus[key]?.status === 'checking' && (
+                    <ActivityIndicator size="small" color={accentColor} style={styles.pingSpinner} />
+                  )}
+                  {pingStatus[key]?.status === 'ok' && (
+                    <Text style={styles.pingSuccess}>{pingStatus[key].latency}ms</Text>
+                  )}
+                  {pingStatus[key]?.status === 'error' && (
+                    <Text style={styles.pingError}>DEAD</Text>
+                  )}
+                  <TouchableOpacity 
+                    style={styles.pingButton} 
+                    onPress={() => runPingCheck(key, domain)}
+                  >
+                    <Text style={styles.pingButtonText}>PING</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.divider} />
+
+          <Text style={styles.sectionTitle}>DATA MANAGEMENT</Text>
+          <View style={styles.accentContainer}>
+            {(clickHistoryTMDB.length > 0 || clickHistoryAnime.length > 0) ? (
+              <TouchableOpacity style={styles.clearHistoryButton} onPress={clearHistory}>
+                <Text style={styles.clearHistoryButtonText}>CLEAR LOCAL CLICK HISTORY</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.emptySettingsText}>NO CLICK HISTORY SAVED</Text>
+            )}
+          </View>
+        </ScrollView>
+      )}
+
+      {/* Custom Bottom Tab Bar (Nothing OS design) */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={styles.tabItem}
+          onPress={() => setCurrentTab('home')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabLabel, currentTab === 'home' ? { color: accentColor } : styles.tabInactive]}>
+            HOME
+          </Text>
+          {currentTab === 'home' && <View style={[styles.activeTabDot, { backgroundColor: accentColor }]} />}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabItem}
+          onPress={() => setCurrentTab('me')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabLabel, currentTab === 'me' ? { color: accentColor } : styles.tabInactive]}>
+            ME
+          </Text>
+          {currentTab === 'me' && <View style={[styles.activeTabDot, { backgroundColor: accentColor }]} />}
         </TouchableOpacity>
       </View>
-
-      {/* Category Selection Row */}
-      <View style={styles.categoryRow}>
-        {(['all', 'hollywood', 'bollywood', 'anime'] as const).map((cat) => (
-          <CategoryPill
-            key={cat}
-            title={cat}
-            isActive={category === cat}
-            onPress={() => setCategory(cat)}
-          />
-        ))}
-      </View>
-
-      {/* Loading & Status Indications */}
-      {statusMessage ? (
-        <View style={styles.statusBox}>
-          <Text style={styles.statusText}>{statusMessage.toUpperCase()}</Text>
-        </View>
-      ) : null}
-
-      {loading && <ActivityIndicator size="small" color="#FF0000" style={styles.spinner} />}
-
-      {/* Results Grid / List */}
-      <FlatList
-        data={results.length > 0 ? results : trending}
-        keyExtractor={(item) => item.link}
-        contentContainerStyle={styles.listContent}
-        ListHeaderComponent={
-          results.length === 0 ? (
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>TRENDING SELECTION</Text>
-            </View>
-          ) : null
-        }
-        renderItem={({ item }) => (
-          <ResultCard item={item} onPress={() => openLink(item.link)} />
-        )}
-        ListEmptyComponent={
-          !loading ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
-            </View>
-          ) : null
-        }
-      />
 
       {/* Invisible scraper WebViews */}
       <View style={styles.hiddenContainer}>
@@ -267,6 +769,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)'
   },
   brandTitle: {
     fontFamily: 'Ndot57',
@@ -284,9 +788,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     marginRight: 6,
   },
-  dotGreen: {
-    backgroundColor: '#00FF88',
-  },
   dotRed: {
     backgroundColor: '#FF2D55',
   },
@@ -296,6 +797,9 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.4)',
     letterSpacing: 1,
   },
+  tabContent: {
+    flex: 1,
+  },
   searchContainer: {
     flexDirection: 'row',
     marginHorizontal: 20,
@@ -304,6 +808,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.15)',
     borderRadius: 0,
     backgroundColor: 'rgba(255,255,255,0.02)',
+    alignItems: 'center'
   },
   searchInput: {
     flex: 1,
@@ -313,6 +818,17 @@ const styles = StyleSheet.create({
     fontFamily: 'LetteraMono',
     fontSize: 13,
     letterSpacing: 1,
+  },
+  clearSearchInput: {
+    paddingHorizontal: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: 50
+  },
+  clearSearchInputText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 22,
+    fontFamily: 'LetteraMono'
   },
   searchButton: {
     width: 60,
@@ -344,7 +860,6 @@ const styles = StyleSheet.create({
   statusText: {
     fontFamily: 'NType82Mono',
     fontSize: 10,
-    color: '#FF2D55',
     letterSpacing: 1.5,
   },
   spinner: {
@@ -353,16 +868,6 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 24,
-  },
-  sectionHeader: {
-    marginTop: 20,
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontFamily: 'Ndot57',
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.3)',
-    letterSpacing: 1.5,
   },
   emptyContainer: {
     marginTop: 60,
@@ -373,6 +878,317 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255,255,255,0.2)',
     letterSpacing: 1.5,
+  },
+  scrollFeedsContent: {
+    paddingBottom: 30,
+  },
+  feedSpinner: {
+    marginTop: 20,
+  },
+  feedLane: {
+    marginTop: 20,
+  },
+  laneTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.3)',
+    letterSpacing: 1.5,
+    marginHorizontal: 20,
+    marginBottom: 12,
+  },
+  laneScroll: {
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  laneEmptyText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.25)',
+    letterSpacing: 1,
+    marginVertical: 20,
+    width: 250,
+  },
+  feedCard: {
+    width: 110,
+    position: 'relative',
+  },
+  feedPoster: {
+    width: 110,
+    height: 165,
+    borderRadius: 0,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  feedCardBookmark: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(10,10,12,0.8)',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  bookmarkStar: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    lineHeight: 12,
+  },
+  feedCardTitle: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: '#FFFFFF',
+    marginTop: 6,
+    letterSpacing: 0.5,
+  },
+  feedCardSubtitle: {
+    fontFamily: 'LetteraMono',
+    fontSize: 8,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
+  settingsContent: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 40,
+  },
+  sectionTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.3)',
+    letterSpacing: 1.5,
+    marginBottom: 16,
+  },
+  emptySettingsText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.2)',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  watchlistGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 8,
+  },
+  watchlistItem: {
+    width: '31%',
+    position: 'relative',
+    marginBottom: 12,
+  },
+  watchlistPoster: {
+    width: '100%',
+    aspectRatio: 2/3,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  watchlistRemove: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(255, 45, 85, 0.95)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 0,
+  },
+  watchlistRemoveText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 7,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  watchlistTitle: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    color: '#FFFFFF',
+    marginTop: 4,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    marginVertical: 24,
+  },
+  accentContainer: {
+    marginBottom: 8,
+  },
+  accentLabel: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  accentRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  accentPill: {
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 0,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  accentPillText: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    letterSpacing: 1,
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  settingsInput: {
+    height: 44,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    paddingHorizontal: 12,
+    color: '#FFFFFF',
+    fontFamily: 'LetteraMono',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  switchGroup: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  switchLabel: {
+    fontFamily: 'NType82Mono',
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  switchDesc: {
+    fontFamily: 'LetteraMono',
+    fontSize: 8,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
+  proxyFields: {
+    paddingLeft: 12,
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255,255,255,0.08)',
+    marginBottom: 10,
+  },
+  diagnosticsContainer: {
+    gap: 12,
+  },
+  diagnosticRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  diagnosticDetails: {
+    flex: 1,
+    marginRight: 12,
+  },
+  diagnosticName: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  diagnosticUrl: {
+    fontFamily: 'LetteraMono',
+    fontSize: 8,
+    color: 'rgba(255,255,255,0.3)',
+    marginTop: 2,
+  },
+  diagnosticActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pingSpinner: {
+    marginRight: 4,
+  },
+  pingSuccess: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    color: '#00FF88',
+    letterSpacing: 0.5,
+  },
+  pingError: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    color: '#FF2D55',
+    letterSpacing: 0.5,
+  },
+  pingButton: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 0,
+  },
+  pingButtonText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 8,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  clearHistoryButton: {
+    borderWidth: 1,
+    borderColor: '#FF2D55',
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  clearHistoryButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    color: '#FF2D55',
+    letterSpacing: 1,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    height: 58,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: '#0A0A0C',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  tabItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '40%',
+    height: '100%',
+    position: 'relative',
+  },
+  tabLabel: {
+    fontFamily: 'Ndot57',
+    fontSize: 13,
+    letterSpacing: 1.5,
+  },
+  tabInactive: {
+    color: 'rgba(255,255,255,0.3)',
+  },
+  activeTabDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    position: 'absolute',
+    bottom: 6,
   },
   hiddenContainer: {
     width: 0,
