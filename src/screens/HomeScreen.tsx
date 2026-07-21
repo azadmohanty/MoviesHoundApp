@@ -12,7 +12,8 @@ import {
   Linking,
   Image,
   ScrollView,
-  Switch
+  Switch,
+  Modal
 } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
@@ -20,14 +21,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CategoryPill } from '../components/CategoryPill';
 import { ResultCard } from '../components/ResultCard';
 import { SearchResult, parseHTML } from '../utils/parser';
-import { resolveAllDomains, ROTATORS } from '../utils/resolver';
+import { resolveAllDomains } from '../utils/resolver';
 import {
   getTrendingMovies,
   getTrendingTVShows,
   getBollywoodMovies,
   getPersonalizedTMDBRecommendations,
   TMDBMediaItem,
-  getTMDBConfig
+  getTMDBConfig,
+  getIMDbId
 } from '../utils/tmdb';
 import {
   getTrendingAnime,
@@ -54,6 +56,10 @@ export default function HomeScreen() {
 
   // Theme Accent State
   const [accentColor, setAccentColor] = useState('#FF2D55'); // Default: Nothing Red
+
+  // Bottom Sheet Details State
+  const [selectedMedia, setSelectedMedia] = useState<any>(null);
+  const [sheetVisible, setSheetVisible] = useState(false);
 
   // Settings & Credentials States
   const [tmdbKey, setTmdbKey] = useState('');
@@ -260,12 +266,16 @@ export default function HomeScreen() {
     loadFeeds();
   };
 
-  // Core Search Submit Action
-  const handleSearchSubmit = (searchQuery: string = query, searchCategory: typeof category = category) => {
+  // Core Search Submit Action (Handles optional fallback retries)
+  const handleSearchSubmit = (
+    searchQuery: string = query, 
+    searchCategory: typeof category = category,
+    fallbackTitle?: string
+  ) => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) return;
     
-    // Switch to Home tab immediately if searching from Settings/Watchlist
+    // Switch to Home tab
     setCurrentTab('home');
 
     searchId.current += 1;
@@ -329,13 +339,61 @@ export default function HomeScreen() {
       if (searchId.current === currentId) {
         setLoading(false);
         setStatusMessage('');
+        
         if (resultsCountRef.current === 0) {
-          console.log('Search timed out with 0 results. Triggering domain refresh...');
-          setStatusMessage('SEARCH FAILED. REFRESHING DOMAINS...');
-          loadDomains(true);
+          // If we did a search using IMDb ID (starts with tt) and it failed, fallback to Text Title search
+          if (trimmedQuery.startsWith('tt') && fallbackTitle) {
+            console.log(`IMDb ID search empty. Retrying with text title: ${fallbackTitle}`);
+            setStatusMessage('IMDB EMPTY. RETRYING BY TITLE...');
+            handleSearchSubmit(fallbackTitle, searchCategory);
+          } else {
+            console.log('Search timed out with 0 results. Triggering domain refresh...');
+            setStatusMessage('SEARCH FAILED. REFRESHING DOMAINS...');
+            loadDomains(true);
+          }
         }
       }
     }, 15000);
+  };
+
+  // High-accuracy search triggering (Fetches IMDb ID first)
+  const handleSearchSubmitWithIMDb = async (
+    title: string, 
+    type: 'movie' | 'tv' | 'anime', 
+    tmdbId?: number
+  ) => {
+    setCurrentTab('home');
+    setQuery(title);
+    
+    // Auto-select active category
+    let targetCat: typeof category = 'all';
+    if (type === 'anime') {
+      targetCat = 'anime';
+      setCategory('anime');
+    } else if (type === 'movie') {
+      targetCat = 'hollywood';
+      setCategory('hollywood');
+    } else {
+      setCategory('all');
+    }
+
+    if (type !== 'anime' && tmdbId) {
+      setLoading(true);
+      setStatusMessage('Fetching IMDb ID for accuracy...');
+      try {
+        const imdbId = await getIMDbId(tmdbId, type);
+        if (imdbId) {
+          console.log(`Found IMDb ID: ${imdbId} for title: ${title}. Running targeted search.`);
+          handleSearchSubmit(imdbId, targetCat, title);
+          return;
+        }
+      } catch (err) {
+        console.warn('Error fetching IMDb ID:', err);
+      }
+    }
+
+    // Default Fallback
+    handleSearchSubmit(title, targetCat);
   };
 
   const handleWebViewMessage = (siteKey: string, html: string) => {
@@ -369,17 +427,12 @@ export default function HomeScreen() {
     const isSaved = watchlist.some(i => i.id === item.id && i.mediaType === type);
     return (
       <View key={`${type}-${item.id}`} style={styles.feedCard}>
+        {/* Tapping the poster opens the custom details bottom sheet */}
         <TouchableOpacity
           onPress={() => {
             trackMediaClick(item.id, type);
-            setQuery(item.title);
-            if (type === 'anime') {
-              setCategory('anime');
-              handleSearchSubmit(item.title, 'anime');
-            } else {
-              setCategory('all');
-              handleSearchSubmit(item.title, 'all');
-            }
+            setSelectedMedia({ ...item, mediaType: type });
+            setSheetVisible(true);
           }}
           activeOpacity={0.8}
         >
@@ -392,6 +445,19 @@ export default function HomeScreen() {
         >
           <Text style={[styles.bookmarkStar, isSaved && { color: accentColor }]}>
             {isSaved ? '★' : '☆'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Direct Search overlay on card */}
+        <TouchableOpacity
+          style={styles.feedCardDownload}
+          onPress={() => {
+            trackMediaClick(item.id, type);
+            handleSearchSubmitWithIMDb(item.title, type, item.id);
+          }}
+        >
+          <Text style={[styles.downloadArrow, { color: accentColor }]}>
+            ↓
           </Text>
         </TouchableOpacity>
 
@@ -552,9 +618,7 @@ export default function HomeScreen() {
                 <View key={`${item.mediaType}-${item.id}`} style={styles.watchlistItem}>
                   <TouchableOpacity
                     onPress={() => {
-                      setQuery(item.title);
-                      setCategory(item.mediaType === 'anime' ? 'anime' : 'all');
-                      handleSearchSubmit(item.title, item.mediaType === 'anime' ? 'anime' : 'all');
+                      handleSearchSubmitWithIMDb(item.title, item.mediaType, item.id);
                     }}
                   >
                     <Image source={{ uri: item.posterUrl }} style={styles.watchlistPoster} />
@@ -606,7 +670,7 @@ export default function HomeScreen() {
 
           <Text style={styles.sectionTitle}>TMDB CREDENTIALS</Text>
           <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>TMDB API KEY</Text>
+            <Text style={styles.inputLabel}>TMDB API KEY (ACCESS TOKEN)</Text>
             <TextInput
               style={styles.settingsInput}
               value={tmdbKey}
@@ -711,7 +775,16 @@ export default function HomeScreen() {
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('home')}
+          onPress={() => {
+            if (currentTab === 'home') {
+              // Tapping HOME tab again resets active search state to reveal recommendations
+              setQuery('');
+              setResults([]);
+              setCategory('all');
+            } else {
+              setCurrentTab('home');
+            }
+          }}
           activeOpacity={0.8}
         >
           <Text style={[styles.tabLabel, currentTab === 'home' ? { color: accentColor } : styles.tabInactive]}>
@@ -731,6 +804,69 @@ export default function HomeScreen() {
           {currentTab === 'me' && <View style={[styles.activeTabDot, { backgroundColor: accentColor }]} />}
         </TouchableOpacity>
       </View>
+
+      {/* Nothing OS Styled Details Bottom Sheet Modal */}
+      <Modal
+        visible={sheetVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setSheetVisible(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={() => setSheetVisible(false)}
+        >
+          <View style={styles.modalContainer}>
+            <TouchableOpacity activeOpacity={1} style={styles.sheetContent}>
+              <View style={styles.sheetHeader}>
+                <View style={styles.dragHandle} />
+                <TouchableOpacity onPress={() => setSheetVisible(false)} style={styles.closeSheetButton}>
+                  <Text style={styles.closeSheetText}>×</Text>
+                </TouchableOpacity>
+              </View>
+
+              {selectedMedia && (
+                <ScrollView contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator={false}>
+                  {selectedMedia.backdropUrl && (
+                    <Image source={{ uri: selectedMedia.backdropUrl }} style={styles.sheetBackdrop} resizeMode="cover" />
+                  )}
+                  
+                  <Text style={styles.sheetTitle}>{selectedMedia.title.toUpperCase()}</Text>
+                  
+                  <View style={styles.sheetMetaRow}>
+                    <Text style={[styles.sheetMetaText, { color: accentColor }]}>
+                      {selectedMedia.rating ? `${selectedMedia.rating.toFixed(1)} ★` : 'N/A'}
+                    </Text>
+                    <Text style={styles.sheetMetaText}>•</Text>
+                    <Text style={styles.sheetMetaText}>{selectedMedia.releaseDate}</Text>
+                    <Text style={styles.sheetMetaText}>•</Text>
+                    <Text style={styles.sheetMetaText}>{selectedMedia.mediaType.toUpperCase()}</Text>
+                  </View>
+
+                  <Text style={styles.sheetOverview}>
+                    {selectedMedia.overview || 'NO DESCRIPTION AVAILABLE.'}
+                  </Text>
+
+                  <TouchableOpacity
+                    style={[styles.sheetSearchButton, { backgroundColor: accentColor }]}
+                    onPress={() => {
+                      setSheetVisible(false);
+                      handleSearchSubmitWithIMDb(
+                        selectedMedia.title, 
+                        selectedMedia.mediaType, 
+                        selectedMedia.id
+                      );
+                    }}
+                  >
+                    <Text style={styles.sheetSearchButtonText}>FIND DOWNLOAD LINKS</Text>
+                  </TouchableOpacity>
+                </ScrollView>
+              )}
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Invisible scraper WebViews */}
       <View style={styles.hiddenContainer}>
@@ -764,13 +900,14 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
+    paddingTop: 45, // Pushed down to clear the status bar / notch area
+    paddingBottom: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)'
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: '#0A0A0C'
   },
   brandTitle: {
     fontFamily: 'Ndot57',
@@ -932,6 +1069,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 0.5,
     borderColor: 'rgba(255,255,255,0.15)',
+    zIndex: 10
+  },
+  feedCardDownload: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    backgroundColor: 'rgba(10,10,12,0.8)',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.15)',
+    zIndex: 10
+  },
+  downloadArrow: {
+    fontSize: 11,
+    fontFamily: 'LetteraMono',
+    lineHeight: 12,
+    fontWeight: 'bold'
   },
   bookmarkStar: {
     fontSize: 12,
@@ -1189,6 +1347,101 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     position: 'absolute',
     bottom: 6,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    maxHeight: '75%',
+    backgroundColor: '#0A0A0C',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderTopWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    overflow: 'hidden',
+  },
+  sheetContent: {
+    width: '100%',
+    paddingBottom: 24,
+  },
+  sheetHeader: {
+    height: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  closeSheetButton: {
+    position: 'absolute',
+    right: 16,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeSheetText: {
+    fontSize: 28,
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontFamily: 'LetteraMono',
+  },
+  sheetScroll: {
+    padding: 20,
+  },
+  sheetBackdrop: {
+    width: '100%',
+    height: 180,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  sheetTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 20,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+    lineHeight: 26,
+  },
+  sheetMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 10,
+  },
+  sheetMetaText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.5)',
+    letterSpacing: 0.5,
+  },
+  sheetOverview: {
+    fontFamily: 'LetteraMono',
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    lineHeight: 18,
+    letterSpacing: 0.5,
+    marginBottom: 24,
+  },
+  sheetSearchButton: {
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 0,
+  },
+  sheetSearchButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 13,
+    color: '#0A0A0C',
+    letterSpacing: 1.5,
   },
   hiddenContainer: {
     width: 0,

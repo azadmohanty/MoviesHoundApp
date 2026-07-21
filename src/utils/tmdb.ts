@@ -150,3 +150,13 @@ export const getPersonalizedTMDBRecommendations = async (
   results.forEach(item => unique.set(item.id, item));
   return Array.from(unique.values());
 };
+
+export const getIMDbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<string | null> => {
+  try {
+    const data = await fetchFromTMDB(`/${mediaType}/${id}/external_ids`);
+    return data.imdb_id || null;
+  } catch (e) {
+    console.warn(`Failed to fetch IMDb ID for ${mediaType} ${id}:`, e);
+    return null;
+  }
+};
