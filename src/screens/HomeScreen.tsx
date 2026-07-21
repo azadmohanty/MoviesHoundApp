@@ -33,13 +33,14 @@ export default function HomeScreen() {
   const [searchTasks, setSearchTasks] = useState<SearchTask[]>([]);
   const [trending, setTrending] = useState<SearchResult[]>([]);
   const searchId = useRef(0);
+  const resultsCountRef = useRef(0);
 
   useEffect(() => {
     loadDomains();
   }, []);
 
-  const loadDomains = async () => {
-    const domains = await resolveAllDomains(setStatusMessage);
+  const loadDomains = async (force: boolean = false) => {
+    const domains = await resolveAllDomains(setStatusMessage, force);
     setResolvedDomains(domains);
     loadTrending(domains);
   };
@@ -60,6 +61,7 @@ export default function HomeScreen() {
     const currentId = searchId.current;
 
     setResults([]);
+    resultsCountRef.current = 0;
     setLoading(true);
     setStatusMessage('Bypassing security...');
 
@@ -116,6 +118,11 @@ export default function HomeScreen() {
       if (searchId.current === currentId) {
         setLoading(false);
         setStatusMessage('');
+        if (resultsCountRef.current === 0) {
+          console.log('Search timed out with 0 results. Triggering domain refresh...');
+          setStatusMessage('SEARCH FAILED. REFRESHING DOMAINS...');
+          loadDomains(true);
+        }
       }
     }, 15000);
   };
@@ -126,7 +133,9 @@ export default function HomeScreen() {
       const combined = [...prev, ...parsedResults];
       const unique = new Map<string, SearchResult>();
       combined.forEach(item => unique.set(item.link, item));
-      return Array.from(unique.values());
+      const finalResults = Array.from(unique.values());
+      resultsCountRef.current = finalResults.length;
+      return finalResults;
     });
     setLoading(false);
     setStatusMessage('');
@@ -151,12 +160,12 @@ export default function HomeScreen() {
       {/* Brand Header */}
       <View style={styles.header}>
         <Text style={styles.brandTitle}>MOVIESHOUND</Text>
-        <View style={styles.statusRow}>
+        <TouchableOpacity onPress={() => loadDomains(true)} style={styles.statusRow}>
           <View style={[styles.statusDot, Object.keys(resolvedDomains).length > 0 ? styles.dotGreen : styles.dotRed]} />
           <Text style={styles.brandSubtitle}>
             {Object.keys(resolvedDomains).length > 0 ? 'SYNCED' : 'OFFLINE'}
           </Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* Search Input Container */}

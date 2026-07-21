@@ -39,11 +39,21 @@ async function resolveDomain(key, url) {
 }
 
 async function main() {
-  const domains = {};
+  let domains = {};
+  try {
+    if (fs.existsSync('domains.json')) {
+      domains = JSON.parse(fs.readFileSync('domains.json', 'utf8'));
+    }
+  } catch (err) {
+    console.error('Failed reading existing domains.json:', err);
+  }
+
   for (const [key, url] of Object.entries(ROTATORS)) {
     const resolved = await resolveDomain(key, url);
     if (resolved) {
       domains[key] = resolved;
+    } else {
+      console.log(`Keeping existing domain for ${key} -> ${domains[key]}`);
     }
   }
 
