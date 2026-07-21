@@ -47,9 +47,9 @@ export default function HomeScreen() {
   const loadTrending = (domains: Record<string, string>) => {
     const defaultTrending: SearchResult[] = [
       { title: "Peaky Blinders Season 1-6 [Hindi + English]", link: `${domains.vegamovies || 'https://vegamovies.navy'}/download-peaky-blinders-season-1-6-hindi-org-480p-720p-1080p-bluray/`, siteName: "Vegamovies", category: "hollywood" },
-      { title: "Oppenheimer (2023) [Hindi + English] 4K", link: `${domains.hollywood || 'https://moviesmod.at'}/download-oppenheimer-2023-hindi-english/`, siteName: "MoviesMod", category: "hollywood" },
-      { title: "Demon Slayer: Kimetsu no Yaiba - Hashira Training Arc", link: `${domains.anime || 'https://vglist.top/?re=anime'}/demon-slayer-hashira-training/`, siteName: "Anime", category: "anime" },
-      { title: "Jawan (2023) [Hindi] Bluray", link: `${domains.bollywood || 'https://moviesleech.asia'}/jawan-2023-hindi-download/`, siteName: "MoviesLeech", category: "bollywood" }
+      { title: "Oppenheimer (2023) [Hindi + English] 4K", link: `${domains.moviesmod || 'https://moviesmod.at'}/download-oppenheimer-2023-hindi-english/`, siteName: "MoviesMod", category: "hollywood" },
+      { title: "Demon Slayer: Kimetsu no Yaiba - Hashira Training Arc", link: `${domains.gokuhd || 'https://gokuhd.com'}/demon-slayer-hashira-training/`, siteName: "GokuHD", category: "anime" },
+      { title: "Jawan (2023) [Hindi] Bluray", link: `${domains.topmovies || 'https://moviesleech.asia'}/jawan-2023-hindi-download/`, siteName: "TopMovies", category: "bollywood" }
     ];
     setTrending(defaultTrending);
   };
@@ -72,10 +72,10 @@ export default function HomeScreen() {
           searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(query)}`
         });
       }
-      if (resolvedDomains.hollywood) {
+      if (resolvedDomains.moviesmod) {
         tasks.push({
           siteKey: 'MoviesMod',
-          searchUrl: `${resolvedDomains.hollywood}/?s=${encodeURIComponent(query)}`
+          searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(query)}`
         });
       }
     }
@@ -87,19 +87,19 @@ export default function HomeScreen() {
           searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(query)}`
         });
       }
-      if (resolvedDomains.bollywood) {
+      if (resolvedDomains.topmovies) {
         tasks.push({
-          siteKey: 'MoviesLeech',
-          searchUrl: `${resolvedDomains.bollywood}/?s=${encodeURIComponent(query)}`
+          siteKey: 'TopMovies',
+          searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(query)}`
         });
       }
     }
 
     if (category === 'all' || category === 'anime') {
-      if (resolvedDomains.anime) {
+      if (resolvedDomains.gokuhd) {
         tasks.push({
-          siteKey: 'AnimeList',
-          searchUrl: `${resolvedDomains.anime}/?s=${encodeURIComponent(query)}`
+          siteKey: 'GokuHD',
+          searchUrl: `${resolvedDomains.gokuhd}/?s=${encodeURIComponent(query)}`
         });
       }
       if (resolvedDomains.animeflix) {
@@ -136,7 +136,6 @@ export default function HomeScreen() {
     try {
       await WebBrowser.openBrowserAsync(url, {
         showTitle: true,
-        enableDefaultShare: true,
         toolbarColor: '#0A0A0C',
         secondaryToolbarColor: '#0A0A0C',
       });

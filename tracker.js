@@ -2,10 +2,10 @@ const fs = require('fs');
 
 const ROTATORS = {
   vegamovies: "https://vglist.top/?re=vegamovies",
+  moviesmod: "https://modlist.in/?type=hollywood",
   rogmovies: "https://vglist.top/?re=rogmovies",
-  anime: "https://vglist.top/?re=anime",
-  hollywood: "https://modlist.in/?type=hollywood",
-  bollywood: "https://modlist.in/?type=bollywood",
+  topmovies: "https://modlist.in/?type=bollywood",
+  gokuhd: "https://vglist.top/?re=anime",
   animeflix: "https://modlist.in/?type=animeflix"
 };
 

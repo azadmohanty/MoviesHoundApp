@@ -1,8 +1,6 @@
 {
-  "vegamovies": "https://vegamovies.navy",
   "rogmovies": "https://rogmovies.rest",
-  "anime": "https://gokuhd.com",
-  "hollywood": "https://moviesmod.at",
-  "bollywood": "https://moviesleech.asia",
+  "topmovies": "https://moviesleech.asia",
+  "gokuhd": "https://gokuhd.com",
   "animeflix": "https://animeflix.dad"
 }

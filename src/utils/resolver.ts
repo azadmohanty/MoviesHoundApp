@@ -1,9 +1,9 @@
 export const ROTATORS = {
   vegamovies: "https://vglist.top/?re=vegamovies",
+  moviesmod: "https://modlist.in/?type=hollywood",
   rogmovies: "https://vglist.top/?re=rogmovies",
-  anime: "https://vglist.top/?re=anime",
-  hollywood: "https://modlist.in/?type=hollywood",
-  bollywood: "https://modlist.in/?type=bollywood",
+  topmovies: "https://modlist.in/?type=bollywood",
+  gokuhd: "https://vglist.top/?re=anime",
   animeflix: "https://modlist.in/?type=animeflix"
 };
 
@@ -39,8 +39,10 @@ export const resolveAllDomains = async (
       console.error(`Failed to resolve ${key}:`, error);
       // Fallbacks
       if (key === 'vegamovies') domains[key] = 'https://vegamovies.navy';
-      else if (key === 'hollywood') domains[key] = 'https://moviesmod.at';
-      else if (key === 'bollywood') domains[key] = 'https://moviesleech.asia';
+      else if (key === 'moviesmod') domains[key] = 'https://moviesmod.at';
+      else if (key === 'rogmovies') domains[key] = 'https://rogmovies.rest';
+      else if (key === 'topmovies') domains[key] = 'https://moviesleech.asia';
+      else if (key === 'gokuhd') domains[key] = 'https://gokuhd.com';
       else if (key === 'animeflix') domains[key] = 'https://animeflix.dad';
       else domains[key] = url;
     }
