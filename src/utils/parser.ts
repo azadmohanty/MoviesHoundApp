@@ -7,7 +7,7 @@ export type SearchResult = {
   category: string;
 };
 
-export const parseHTML = (html: string, siteKey: string, category: string): SearchResult[] => {
+export const parseHTML = (html: string, siteKey: string, category: string, baseUrl?: string): SearchResult[] => {
   const extracted: SearchResult[] = [];
   let currentTag = '';
   let currentHref = '';
@@ -46,13 +46,30 @@ export const parseHTML = (html: string, siteKey: string, category: string): Sear
           cleanHref.includes('/contact-') ||
           cleanHref.includes('/privacy-policy/') ||
           cleanHref === '#' ||
-          cleanHref.startsWith('javascript:');
+          cleanHref.startsWith('javascript:') ||
+          cleanText.toLowerCase().includes('how to download') ||
+          cleanText.toLowerCase() === 'how to';
 
         if (cleanHref && cleanText.length > 5 && !isInvalid) {
           if (insideHeading || cleanText.toLowerCase().includes('download') || cleanText.toLowerCase().includes('season')) {
+            let finalLink = cleanHref;
+            if (finalLink.startsWith('//')) {
+              finalLink = 'https:' + finalLink;
+            } else if (finalLink.startsWith('/')) {
+              if (baseUrl) {
+                finalLink = baseUrl.replace(/\/$/, '') + finalLink;
+              }
+            } else if (!finalLink.startsWith('http://') && !finalLink.startsWith('https://')) {
+              if (baseUrl) {
+                finalLink = baseUrl.replace(/\/$/, '') + '/' + finalLink;
+              } else {
+                finalLink = 'https://' + finalLink;
+              }
+            }
+
             extracted.push({
               title: cleanText.replace(/\s+/g, ' '),
-              link: cleanHref,
+              link: finalLink,
               siteName: siteKey,
               category: category
             });

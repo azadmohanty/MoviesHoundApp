@@ -360,22 +360,14 @@ export default function HomeScreen() {
   const handleSearchSubmitWithIMDb = async (
     title: string, 
     type: 'movie' | 'tv' | 'anime', 
-    tmdbId?: number
+    tmdbId?: number,
+    suggestedCategory: typeof category = 'all'
   ) => {
     setCurrentTab('home');
     setQuery(title);
     
-    // Auto-select active category
-    let targetCat: typeof category = 'all';
-    if (type === 'anime') {
-      targetCat = 'anime';
-      setCategory('anime');
-    } else if (type === 'movie') {
-      targetCat = 'hollywood';
-      setCategory('hollywood');
-    } else {
-      setCategory('all');
-    }
+    // Set active category based on parameter
+    setCategory(suggestedCategory);
 
     if (type !== 'anime' && tmdbId) {
       setLoading(true);
@@ -384,7 +376,7 @@ export default function HomeScreen() {
         const imdbId = await getIMDbId(tmdbId, type);
         if (imdbId) {
           console.log(`Found IMDb ID: ${imdbId} for title: ${title}. Running targeted search.`);
-          handleSearchSubmit(imdbId, targetCat, title);
+          handleSearchSubmit(imdbId, suggestedCategory, title);
           return;
         }
       } catch (err) {
@@ -393,11 +385,13 @@ export default function HomeScreen() {
     }
 
     // Default Fallback
-    handleSearchSubmit(title, targetCat);
+    handleSearchSubmit(title, suggestedCategory);
   };
 
   const handleWebViewMessage = (siteKey: string, html: string) => {
-    const parsedResults = parseHTML(html, siteKey, category);
+    const domainKey = siteKey.toLowerCase();
+    const baseUrl = resolvedDomains[domainKey] || '';
+    const parsedResults = parseHTML(html, siteKey, category, baseUrl);
     setResults(prev => {
       const combined = [...prev, ...parsedResults];
       const unique = new Map<string, SearchResult>();
@@ -412,54 +406,68 @@ export default function HomeScreen() {
 
   const openLink = async (url: string) => {
     try {
-      await WebBrowser.openBrowserAsync(url, {
+      let targetUrl = url;
+      if (targetUrl.startsWith('//')) {
+        targetUrl = 'https:' + targetUrl;
+      } else if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        targetUrl = 'https://' + targetUrl;
+      }
+      await WebBrowser.openBrowserAsync(targetUrl, {
         showTitle: true,
         toolbarColor: '#0A0A0C',
         secondaryToolbarColor: '#0A0A0C',
       });
-    } catch {
-      Linking.openURL(url);
+    } catch (e) {
+      console.warn('Failed to open browser for URL:', url, e);
+      let targetUrl = url;
+      if (targetUrl.startsWith('//')) {
+        targetUrl = 'https:' + targetUrl;
+      } else if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        targetUrl = 'https://' + targetUrl;
+      }
+      Linking.openURL(targetUrl);
     }
   };
 
   // Horizontal Feed Card Builder
-  const renderFeedCard = (item: any, type: 'movie' | 'tv' | 'anime') => {
+  const renderFeedCard = (item: any, type: 'movie' | 'tv' | 'anime', suggestedCategory: typeof category = 'all') => {
     const isSaved = watchlist.some(i => i.id === item.id && i.mediaType === type);
     return (
       <View key={`${type}-${item.id}`} style={styles.feedCard}>
-        {/* Tapping the poster opens the custom details bottom sheet */}
-        <TouchableOpacity
-          onPress={() => {
-            trackMediaClick(item.id, type);
-            setSelectedMedia({ ...item, mediaType: type });
-            setSheetVisible(true);
-          }}
-          activeOpacity={0.8}
-        >
-          <Image source={{ uri: item.posterUrl }} style={styles.feedPoster} />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={styles.feedCardBookmark}
-          onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: type })}
-        >
-          <Text style={[styles.bookmarkStar, isSaved && { color: accentColor }]}>
-            {isSaved ? '★' : '☆'}
-          </Text>
-        </TouchableOpacity>
+        <View style={styles.posterWrapper}>
+          <TouchableOpacity
+            onPress={() => {
+              trackMediaClick(item.id, type);
+              setSelectedMedia({ ...item, mediaType: type, suggestedCategory });
+              setSheetVisible(true);
+            }}
+            activeOpacity={0.8}
+          >
+            <Image source={{ uri: item.posterUrl }} style={styles.feedPoster} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={styles.feedCardBookmark}
+            onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: type })}
+          >
+            <Text style={[styles.bookmarkStar, isSaved && { color: accentColor }]}>
+              {isSaved ? '★' : '☆'}
+            </Text>
+          </TouchableOpacity>
 
-        {/* Direct Search overlay on card */}
-        <TouchableOpacity
-          style={styles.feedCardDownload}
-          onPress={() => {
-            trackMediaClick(item.id, type);
-            handleSearchSubmitWithIMDb(item.title, type, item.id);
-          }}
-        >
-          <Text style={[styles.downloadArrow, { color: accentColor }]}>
-            ↓
-          </Text>
-        </TouchableOpacity>
+          {/* Direct Search overlay on poster (bottom-left) */}
+          <TouchableOpacity
+            style={styles.feedCardDownload}
+            onPress={() => {
+              trackMediaClick(item.id, type);
+              handleSearchSubmitWithIMDb(item.title, type, item.id, suggestedCategory);
+            }}
+          >
+            <Text style={styles.downloadArrow}>
+              ↓
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         <Text style={styles.feedCardTitle} numberOfLines={1}>
           {item.title.toUpperCase()}
@@ -564,7 +572,7 @@ export default function HomeScreen() {
                   {forYouFeed.length > 0 ? (
                     forYouFeed.map(item => {
                       const type = 'rating' in item && item.rating > 10 ? 'anime' : ('mediaType' in item ? item.mediaType : 'movie');
-                      return renderFeedCard(item, type);
+                      return renderFeedCard(item, type, 'all');
                     })
                   ) : (
                     <Text style={styles.laneEmptyText}>
@@ -579,7 +587,7 @@ export default function HomeScreen() {
                 <Text style={styles.laneTitle}>TRENDING HOLLYWOOD</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
                   {tmdbKey ? (
-                    trendingHollywood.map(item => renderFeedCard(item, 'movie'))
+                    trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))
                   ) : (
                     <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
                   )}
@@ -591,7 +599,7 @@ export default function HomeScreen() {
                 <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
                   {tmdbKey ? (
-                    bollywoodHits.map(item => renderFeedCard(item, 'movie'))
+                    bollywoodHits.map(item => renderFeedCard(item, 'movie', 'bollywood'))
                   ) : (
                     <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
                   )}
@@ -602,7 +610,7 @@ export default function HomeScreen() {
               <View style={styles.feedLane}>
                 <Text style={styles.laneTitle}>TRENDING ANIME</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {trendingAnime.map(item => renderFeedCard(item, 'anime'))}
+                  {trendingAnime.map(item => renderFeedCard(item, 'anime', 'anime'))}
                 </ScrollView>
               </View>
             </ScrollView>
@@ -1047,7 +1055,11 @@ const styles = StyleSheet.create({
   },
   feedCard: {
     width: 110,
+  },
+  posterWrapper: {
     position: 'relative',
+    width: 110,
+    height: 165,
   },
   feedPoster: {
     width: 110,
@@ -1075,21 +1087,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 4,
     left: 4,
-    backgroundColor: 'rgba(10,10,12,0.8)',
+    backgroundColor: '#FFE500', // Yellow badge
     width: 24,
     height: 24,
-    borderRadius: 12,
+    borderRadius: 4,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 0.5,
-    borderColor: 'rgba(255,255,255,0.15)',
     zIndex: 10
   },
   downloadArrow: {
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: 'LetteraMono',
-    lineHeight: 12,
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    color: '#000000', // Black arrow
   },
   bookmarkStar: {
     fontSize: 12,

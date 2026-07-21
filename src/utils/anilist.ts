@@ -116,7 +116,7 @@ export const getPersonalizedAnimeRecommendations = async (
   const query = `
     query($id: Int) {
       Media(id: $id) {
-        recommendations(limit: 6, sort: RATING_DESC) {
+        recommendations(perPage: 6, sort: RATING_DESC) {
           nodes {
             mediaRecommendation {
               id
