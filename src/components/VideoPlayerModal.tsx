@@ -26,7 +26,7 @@ type VideoPlayerModalProps = {
   title: string;
   mediaItem?: any;
   onClose: () => void;
-  onDownloadPress?: () => void;
+  onDownloadPress?: (seasonNum: number) => void;
   onSelectArtist?: (personId: number, personName: string) => void;
   onSelectSimilarMedia?: (item: TMDBMediaItem) => void;
   isWatched?: boolean;
@@ -58,6 +58,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [similarList, setSimilarList] = useState<TMDBMediaItem[]>([]);
   const [tvDetails, setTvDetails] = useState<TVShowDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [showTroubleshoot, setShowTroubleshoot] = useState(false);
 
   const isDirectVideoFile = activeUrl?.includes('.m3u8') || activeUrl?.includes('.mp4');
 
@@ -73,6 +74,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setSelectedServer(1);
     setCurrentSeason(1);
     setCurrentEpisode(1);
+    setShowTroubleshoot(false);
   }, [videoUrl]);
 
   useEffect(() => {
@@ -262,7 +264,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
               {/* Enlarged Full-Width Download Button */}
               {onDownloadPress && (
-                <TouchableOpacity style={styles.largeDownloadButton} onPress={onDownloadPress}>
+                <TouchableOpacity style={styles.largeDownloadButton} onPress={() => onDownloadPress(currentSeason)}>
                   <Text style={styles.largeDownloadButtonText}>↓ DOWNLOAD OPTIONS</Text>
                 </TouchableOpacity>
               )}
@@ -273,14 +275,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               <View style={styles.tvSection}>
                 <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
-                  {[1, 2, 3, 4, 5, 6].map((idx) => {
+                  {[1, 2, 3, 4, 5].map((idx) => {
                     let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (2.RU)';
-                    if (idx === 2) label = 'SERVER 2 (TO)';
-                    if (idx === 3) label = 'SERVER 3 (XYZ)';
-                    if (idx === 4) label = 'SERVER 4 (SUPER)';
-                    if (idx === 5) label = 'SERVER 5 (SMASHY)';
-                    if (idx === 6) label = 'SERVER 6 (VSRC)';
+                    if (idx === 1) label = 'SERVER 1 (SUPER VIP)';
+                    if (idx === 2) label = 'SERVER 2 (SUPER SIMPLE)';
+                    if (idx === 3) label = 'SERVER 3 (VIDSRC 2.RU)';
+                    if (idx === 4) label = 'SERVER 4 (VIDSRC TO)';
+                    if (idx === 5) label = 'SERVER 5 (ANYEMBED)';
                     return (
                       <TouchableOpacity
                         key={`server-${idx}`}
@@ -300,6 +301,42 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                     );
                   })}
                 </ScrollView>
+              </View>
+
+              {/* Troubleshooting & Unblocking Guide Panel */}
+              <View style={styles.troubleContainer}>
+                <TouchableOpacity 
+                  style={styles.troubleHeader} 
+                  onPress={() => setShowTroubleshoot(!showTroubleshoot)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.troubleHeaderText}>
+                    {showTroubleshoot ? '✕ CLOSE UNBLOCKING GUIDE' : '⚡ STREAM BLOCKED? TAP TO UNBLOCK'}
+                  </Text>
+                </TouchableOpacity>
+
+                {showTroubleshoot && (
+                  <View style={styles.troubleContent}>
+                    <Text style={styles.troubleSubheading}>METHOD 1: DYNAMIC CLOUD DNS (RECOMMENDED - NO VPN)</Text>
+                    <Text style={styles.troubleText}>
+                      To unblock all servers and double your speed without a slow VPN:{"\n"}
+                      1. Open Phone Settings ➡️ Network & Internet ➡️ Private DNS.{"\n"}
+                      2. Choose Hostname and enter:{"\n"}
+                      <Text style={{ color: '#FFE500', fontWeight: 'bold' }}>1dot1dot1dot1.cloudflare-dns.com</Text>{"\n"}
+                      3. Save and reload the stream.
+                    </Text>
+
+                    <Text style={[styles.troubleSubheading, { marginTop: 12 }]}>METHOD 2: USE A VPN</Text>
+                    <Text style={styles.troubleText}>
+                      If DNS changes don't work, turn on any free VPN (e.g., ProtonVPN) set to USA/Singapore.
+                    </Text>
+
+                    <Text style={[styles.troubleSubheading, { marginTop: 12 }]}>METHOD 3: CLOUDFLARE CAPTCHA CHECK</Text>
+                    <Text style={styles.troubleText}>
+                      SuperEmbed servers (Server 1 & 2) might show a Cloudflare check page. Simply tap the checkbox inside the player to begin playback.
+                    </Text>
+                  </View>
+                )}
               </View>
 
               {/* TV Series Season & Episode Picker */}

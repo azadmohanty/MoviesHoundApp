@@ -121,7 +121,6 @@ export default function HomeScreen() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | 'hollywood' | 'bollywood' | 'anime'>('all');
   const [resolvedDomains, setResolvedDomains] = useState<Record<string, string>>({});
-  const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Initializing...');
   const [searchSuggestions, setSearchSuggestions] = useState<TMDBMediaItem[]>([]);
@@ -129,12 +128,20 @@ export default function HomeScreen() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [searchMode, setSearchMode] = useState<'movies' | 'downloads'>('movies');
-  const [downloadResults, setDownloadResults] = useState<SearchResult[]>([]);
-  const [downloadLoading, setDownloadLoading] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [exploreFilterVisible, setExploreFilterVisible] = useState(false);
   const toggleAnim = useRef(new Animated.Value(0)).current;
-  const [searchTasks, setSearchTasks] = useState<SearchTask[]>([]);
+
+  // Isolated Scraper Terminal States
+  const [scraperVisible, setScraperVisible] = useState(false);
+  const [scraperQuery, setScraperQuery] = useState('');
+  const [scraperResults, setScraperResults] = useState<SearchResult[]>([]);
+  const [scraperLoading, setScraperLoading] = useState(false);
+  const [scraperStatus, setScraperStatus] = useState('');
+  const [scraperTasks, setScraperTasks] = useState<SearchTask[]>([]);
+  const [scraperMediaType, setScraperMediaType] = useState<'movie' | 'tv' | 'anime'>('movie');
+  const [scraperTmdbId, setScraperTmdbId] = useState<number | undefined>(undefined);
+
   const searchId = useRef(0);
   const resultsCountRef = useRef(0);
 
@@ -292,13 +299,22 @@ export default function HomeScreen() {
   const loadExploreData = async () => {
     try {
       setExploreLoading(true);
-      const genreId = TMDB_GENRES[selectedGenre];
+      let genreId = TMDB_GENRES[selectedGenre];
+      if (exploreType === 'tv') {
+        if (selectedGenre === 'Action' || selectedGenre === 'Adventure') {
+          genreId = 10759; // TV Action & Adventure
+        } else if (selectedGenre === 'SciFi') {
+          genreId = 10765; // TV Sci-Fi & Fantasy
+        } else if (selectedGenre === 'Horror' || selectedGenre === 'Thriller') {
+          genreId = 9648; // TV Mystery (Closest to Thriller/Horror)
+        }
+      }
       let numericYear: number | undefined = undefined;
       if (selectedYear !== 'ALL YEARS') {
         const parsed = parseInt(selectedYear, 10);
         if (!isNaN(parsed)) numericYear = parsed;
       }
-      const items = await discoverMediaByGenre(genreId, 1, numericYear);
+      const items = await discoverMediaByGenre(genreId, 1, numericYear, 'popularity.desc', exploreType);
       let filtered = items;
       if (selectedRating > 0) {
         filtered = filtered.filter(i => i.rating >= selectedRating);
@@ -453,7 +469,6 @@ export default function HomeScreen() {
     setCurrentTab('home');
     setSearchMode('movies');
     setIsSearchActive(true);
-    setResults([]);
     setLoading(true);
     setStatusMessage('Searching titles...');
 
@@ -477,17 +492,28 @@ export default function HomeScreen() {
   const runDownloadScraper = async (
     title: string,
     mediaType: 'movie' | 'tv' | 'anime',
-    tmdbId?: number
+    tmdbId?: number,
+    seasonNum: number = 1
   ) => {
-    setSearchMode('downloads');
-    setIsSearchActive(true);
-    setResults([]);
+    setScraperVisible(true);
+    setScraperMediaType(mediaType);
+    setScraperTmdbId(tmdbId);
+    setScraperQuery(title);
+    setScraperResults([]);
     resultsCountRef.current = 0;
-    setLoading(true);
-    setStatusMessage('Bypassing security...');
+    setScraperLoading(true);
+    setScraperStatus('Bypassing security...');
 
+    // Smart Query Mapping:
+    // If it's a TV show, append "S0X" (e.g. "S01") to match target season index page
     let searchQuery = title;
-    if (mediaType !== 'anime' && tmdbId) {
+    if (mediaType === 'tv') {
+      const formattedSeason = seasonNum < 10 ? `S0${seasonNum}` : `S${seasonNum}`;
+      searchQuery = `${title} ${formattedSeason}`;
+    }
+
+    // Try to resolve IMDb ID first for exact matches on movies
+    if (mediaType === 'movie' && tmdbId) {
       try {
         const imdbId = await getIMDbId(tmdbId, mediaType);
         if (imdbId) {
@@ -526,12 +552,12 @@ export default function HomeScreen() {
       if (resolvedDomains.moviesmod) tasks.push({ siteKey: 'MoviesMod', searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(searchQuery)}` });
     }
 
-    setSearchTasks(tasks);
+    setScraperTasks(tasks);
 
     // Fallback timer: if 0 links after 6 seconds, search other sites to find dubbed dual-audio
     setTimeout(() => {
       if (searchId.current === currentId && resultsCountRef.current === 0) {
-        setStatusMessage('Searching fallback sources...');
+        setScraperStatus('Searching fallback sources...');
         const fallbackTasks: SearchTask[] = [];
         if (mediaType !== 'anime' && category !== 'anime') {
           if (lang === 'hi' || category === 'bollywood') {
@@ -542,17 +568,17 @@ export default function HomeScreen() {
             if (resolvedDomains.topmovies) fallbackTasks.push({ siteKey: 'TopMovies', searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(title)}` });
           }
         }
-        setSearchTasks(prev => [...prev, ...fallbackTasks]);
+        setScraperTasks(prev => [...prev, ...fallbackTasks]);
       }
     }, 6000);
 
     // Stop loading after 12 seconds max (Safety Timeout)
     setTimeout(() => {
       if (searchId.current === currentId) {
-        setLoading(false);
-        setStatusMessage('');
+        setScraperLoading(false);
+        setScraperStatus('');
         if (resultsCountRef.current === 0) {
-          setStatusMessage('NO DOWNLOAD LINKS RESOLVED. ATTEMPT OTHER SITES.');
+          setScraperStatus('NO DOWNLOAD LINKS RESOLVED. ATTEMPT OTHER SITES.');
         }
       }
     }, 12000);
@@ -564,9 +590,6 @@ export default function HomeScreen() {
     tmdbId?: number,
     suggestedCategory: typeof category = 'all'
   ) => {
-    setCurrentTab('home');
-    setQuery(title);
-    setCategory(suggestedCategory);
     runDownloadScraper(title, type, tmdbId);
   };
 
@@ -583,7 +606,7 @@ export default function HomeScreen() {
     const domainKey = siteKey.toLowerCase();
     const baseUrl = resolvedDomains[domainKey] || '';
     const parsedResults = parseHTML(html, siteKey, category, baseUrl);
-    setResults(prev => {
+    setScraperResults(prev => {
       const combined = [...prev, ...parsedResults];
       const unique = new Map<string, SearchResult>();
       combined.forEach(item => unique.set(item.link, item));
@@ -591,8 +614,8 @@ export default function HomeScreen() {
       resultsCountRef.current = finalResults.length;
       return finalResults;
     });
-    setLoading(false);
-    setStatusMessage('');
+    setScraperLoading(false);
+    setScraperStatus('');
   };
 
   const openLink = async (url: string) => {
@@ -712,7 +735,6 @@ export default function HomeScreen() {
                     setSearchSuggestions([]);
                     setShowSuggestions(false);
                     setTmdbSearchResults([]);
-                    setResults([]);
                     setIsSearchActive(false);
                   }
                 }}
@@ -728,7 +750,6 @@ export default function HomeScreen() {
                     setSearchSuggestions([]);
                     setShowSuggestions(false);
                     setTmdbSearchResults([]);
-                    setResults([]);
                     setIsSearchActive(false);
                   }}
                 >
@@ -812,39 +833,30 @@ export default function HomeScreen() {
           {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
 
           {isSearchActive ? (
-            searchMode === 'movies' ? (
-              <FlatList
-                data={tmdbSearchResults}
-                keyExtractor={(item) => `search-tmdb-${item.id}`}
-                numColumns={3}
-                contentContainerStyle={styles.exploreGrid}
-                columnWrapperStyle={styles.exploreGridRow}
-                renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
-                ListEmptyComponent={
-                  !loading ? (
-                    <View style={styles.emptyContainer}>
-                      <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
-                    </View>
-                  ) : null
-                }
-              />
-            ) : (
-              <FlatList
-                data={results}
-                keyExtractor={(item) => item.link}
-                contentContainerStyle={styles.listContent}
-                renderItem={({ item }) => (
-                  <ResultCard item={item} onPress={() => openLink(item.link)} />
-                )}
-                ListEmptyComponent={
-                  !loading ? (
-                    <View style={styles.emptyContainer}>
-                      <Text style={styles.emptyText}>NO DOWNLOAD LINKS FOUND</Text>
-                    </View>
-                  ) : null
-                }
-              />
-            )
+            <FlatList
+              data={tmdbSearchResults}
+              keyExtractor={(item) => `search-tmdb-${item.id}`}
+              numColumns={3}
+              contentContainerStyle={styles.exploreGrid}
+              columnWrapperStyle={styles.exploreGridRow}
+              renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+              ListEmptyComponent={
+                !loading ? (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>NO CATALOG RESULTS FOUND</Text>
+                    <TouchableOpacity
+                      style={styles.bypassScraperButton}
+                      onPress={() => runDownloadScraper(query, 'movie')}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.bypassScraperButtonText}>
+                        SEARCH DOWNLOAD FILES FOR "{query.toUpperCase()}" DIRECTLY →
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null
+              }
+            />
           ) : (
             <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
               {/* Featured Hero Banner at Top of Home Feed */}
@@ -1217,7 +1229,6 @@ export default function HomeScreen() {
           onPress={() => {
             if (currentTab === 'home') {
               setQuery('');
-              setResults([]);
               setCategory('all');
               setIsSearchActive(false);
               setTmdbSearchResults([]);
@@ -1288,10 +1299,10 @@ export default function HomeScreen() {
           setPlayerVisible(false);
           setActiveStreamUrl(null);
         }}
-        onDownloadPress={() => {
+        onDownloadPress={(seasonNum) => {
           if (activeMediaItem) {
             setPlayerVisible(false);
-            handleSearchSubmitWithIMDb(activeMediaItem.title, activeMediaItem.mediaType, activeMediaItem.id);
+            runDownloadScraper(activeMediaItem.title, activeMediaItem.mediaType || 'movie', activeMediaItem.id, seasonNum);
           }
         }}
         onSelectArtist={(id, name) => handleOpenArtist(id, name)}
@@ -1347,9 +1358,108 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Isolated Scraper Terminal Modal */}
+      <Modal
+        visible={scraperVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => {
+          setScraperVisible(false);
+          setScraperTasks([]);
+          setScraperResults([]);
+          setScraperStatus('');
+        }}
+      >
+        <View style={styles.scraperModalOverlay}>
+          <View style={styles.scraperModalContent}>
+            {/* Header */}
+            <View style={styles.scraperHeader}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={styles.scraperModalTitle}>DOWNLOAD & STREAM RESOLVER</Text>
+                <Text style={styles.scraperSubtitle} numberOfLines={1}>
+                  {scraperMediaType.toUpperCase()} • {scraperQuery.toUpperCase()}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.scraperCloseButton}
+                onPress={() => {
+                  setScraperVisible(false);
+                  setScraperTasks([]);
+                  setScraperResults([]);
+                  setScraperStatus('');
+                }}
+              >
+                <Text style={styles.scraperCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Editable Query Search Box */}
+            <View style={styles.scraperSearchBox}>
+              <TextInput
+                style={styles.scraperInput}
+                value={scraperQuery}
+                onChangeText={setScraperQuery}
+                placeholder="EDIT SEARCH KEYWORD FOR SCRAPING..."
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                onSubmitEditing={() => runDownloadScraper(scraperQuery, scraperMediaType, scraperTmdbId)}
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              <TouchableOpacity
+                style={styles.scraperSearchButton}
+                onPress={() => runDownloadScraper(scraperQuery, scraperMediaType, scraperTmdbId)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.scraperSearchButtonText}>RE-SCRAPE</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Status Section */}
+            {scraperStatus ? (
+              <View style={styles.scraperStatusBox}>
+                {scraperLoading && <ActivityIndicator size="small" color={accentColor} style={{ marginRight: 8 }} />}
+                <Text style={[styles.scraperStatusText, { color: accentColor }]}>
+                  {scraperStatus.toUpperCase()}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Active Sources Badges */}
+            {scraperTasks.length > 0 && (
+              <View style={styles.scraperSourcesRow}>
+                {scraperTasks.map((task) => (
+                  <View key={`badge-${task.siteKey}`} style={styles.sourceTaskBadge}>
+                    <Text style={styles.sourceTaskBadgeText}>
+                      ⚡ {task.siteKey.toUpperCase()}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Scraper Results List */}
+            <FlatList
+              data={scraperResults}
+              keyExtractor={(item, index) => `${item.link}-${index}`}
+              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
+              renderItem={({ item }) => (
+                <ResultCard item={item} onPress={() => openLink(item.link)} />
+              )}
+              ListEmptyComponent={
+                !scraperLoading && scraperResults.length === 0 ? (
+                  <View style={styles.scraperEmptyContainer}>
+                    <Text style={styles.scraperEmptyText}>NO DIRECT LINKS RESOLVED YET</Text>
+                  </View>
+                ) : null
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
       {/* Invisible scraper WebViews */}
       <View style={styles.hiddenContainer}>
-        {searchTasks.map((task) => (
+        {scraperTasks.map((task) => (
           <WebView
             key={task.siteKey}
             source={{ uri: task.searchUrl }}
@@ -2191,6 +2301,143 @@ const styles = StyleSheet.create({
     fontFamily: 'Ndot57',
     fontSize: 11,
     color: '#0A0A0C',
+    letterSpacing: 1.5,
+  },
+  scraperModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'flex-end',
+  },
+  scraperModalContent: {
+    backgroundColor: '#0A0A0C',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderTopWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    height: '85%',
+  },
+  scraperHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  scraperModalTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 12,
+    color: '#FF2D55',
+    letterSpacing: 1.5,
+  },
+  scraperSubtitle: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginTop: 4,
+    letterSpacing: 0.5,
+  },
+  scraperCloseButton: {
+    paddingHorizontal: 8,
+  },
+  scraperCloseText: {
+    fontSize: 20,
+    color: '#FF2D55',
+    fontFamily: 'Ndot57',
+  },
+  scraperSearchBox: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    alignItems: 'center',
+    gap: 10,
+  },
+  scraperInput: {
+    flex: 1,
+    height: 36,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    paddingHorizontal: 12,
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: '#FFFFFF',
+  },
+  scraperSearchButton: {
+    backgroundColor: '#FFE500',
+    paddingHorizontal: 16,
+    height: 36,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scraperSearchButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: '#0A0A0C',
+    letterSpacing: 1,
+  },
+  scraperStatusBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+  },
+  scraperStatusText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    letterSpacing: 0.5,
+  },
+  scraperSourcesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  sourceTaskBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  sourceTaskBadgeText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 8,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  scraperEmptyContainer: {
+    alignItems: 'center',
+    marginTop: 40,
+  },
+  scraperEmptyText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.4)',
+    letterSpacing: 0.5,
+  },
+  bypassScraperButton: {
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: '#FFE500',
+    backgroundColor: 'rgba(255, 229, 0, 0.05)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 4,
+  },
+  bypassScraperButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: '#FFE500',
     letterSpacing: 1.5,
   },
   hiddenContainer: {

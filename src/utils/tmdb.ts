@@ -205,18 +205,23 @@ export const discoverMediaByGenre = async (
   genreId?: number,
   page: number = 1,
   year?: number,
-  sortBy: string = 'popularity.desc'
+  sortBy: string = 'popularity.desc',
+  mediaType: 'movie' | 'tv' = 'movie'
 ): Promise<TMDBMediaItem[]> => {
   const config = await getTMDBConfig();
-  let endpoint = `/discover/movie?sort_by=${sortBy}&page=${page}`;
+  let endpoint = `/discover/${mediaType}?sort_by=${sortBy}&page=${page}`;
   if (genreId) {
     endpoint += `&with_genres=${genreId}`;
   }
   if (year) {
-    endpoint += `&primary_release_year=${year}`;
+    if (mediaType === 'tv') {
+      endpoint += `&first_air_date_year=${year}`;
+    } else {
+      endpoint += `&primary_release_year=${year}`;
+    }
   }
   const data = await fetchFromTMDB(endpoint);
-  return (data.results || []).map((item: any) => mapMediaItem(item, 'movie', config.imageBase));
+  return (data.results || []).map((item: any) => mapMediaItem(item, mediaType, config.imageBase));
 };
 
 export const getMediaCredits = async (

@@ -30,7 +30,10 @@ export const HARDCODED_FALLBACKS: Record<string, string> = {
   topmovies: 'https://moviesleech.asia',
   gokuhd: 'https://gokuhd.com',
   animeflix: 'https://animeflix.dad',
-  vidsrc: 'https://vidsrc2.ru'
+  vidsrc: 'https://vidsrc2.ru',
+  superembed: 'https://multiembed.mov',
+  vidsrcto: 'https://vidsrc.to',
+  anyembed: 'https://anyembed.xyz'
 };
 
 export const resolveAllDomains = async (
