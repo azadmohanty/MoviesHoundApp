@@ -40,3 +40,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Research, Decoded Providers, & Scratch files
+/cloudstream-repos/
+/decoded_providers/
+/scratch/
+

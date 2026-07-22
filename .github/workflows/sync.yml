@@ -21,7 +21,7 @@ jobs:
           node-version: 20
 
       - name: Run tracker script
-        run: node tracker.js
+        run: node scratch/tracker.js
 
       - name: Commit and push changes
         run: |
