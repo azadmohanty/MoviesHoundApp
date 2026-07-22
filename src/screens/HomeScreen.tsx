@@ -18,10 +18,14 @@ import {
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { CategoryPill } from '../components/CategoryPill';
 import { ResultCard } from '../components/ResultCard';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { SearchResult, parseHTML } from '../utils/parser';
 import { resolveAllDomains } from '../utils/resolver';
+import { resolveStreamUrl } from '../utils/streamResolver';
 import {
   getTrendingMovies,
   getTrendingTVShows,
@@ -29,7 +33,9 @@ import {
   getPersonalizedTMDBRecommendations,
   TMDBMediaItem,
   getTMDBConfig,
-  getIMDbId
+  getIMDbId,
+  discoverMediaByGenre,
+  TMDB_GENRES
 } from '../utils/tmdb';
 import {
   getTrendingAnime,
@@ -52,7 +58,7 @@ type WatchlistItem = {
 
 export default function HomeScreen() {
   // Navigation & Tab State
-  const [currentTab, setCurrentTab] = useState<'home' | 'me'>('home');
+  const [currentTab, setCurrentTab] = useState<'home' | 'explore' | 'me'>('home');
 
   // Theme Accent State
   const [accentColor, setAccentColor] = useState('#FF2D55'); // Default: Nothing Red
@@ -60,6 +66,12 @@ export default function HomeScreen() {
   // Bottom Sheet Details State
   const [selectedMedia, setSelectedMedia] = useState<any>(null);
   const [sheetVisible, setSheetVisible] = useState(false);
+
+  // Native Video Player State
+  const [playerVisible, setPlayerVisible] = useState(false);
+  const [activeStreamUrl, setActiveStreamUrl] = useState<string | null>(null);
+  const [activeStreamTitle, setActiveStreamTitle] = useState('');
+  const [resolvingStream, setResolvingStream] = useState(false);
 
   // Settings & Credentials States
   const [tmdbKey, setTmdbKey] = useState('');
@@ -82,6 +94,11 @@ export default function HomeScreen() {
   const [bollywoodHits, setBollywoodHits] = useState<TMDBMediaItem[]>([]);
   const [trendingAnime, setTrendingAnime] = useState<AniListAnimeItem[]>([]);
 
+  // Explore Tab Discovery States
+  const [selectedGenre, setSelectedGenre] = useState<string>('Action');
+  const [exploreMedia, setExploreMedia] = useState<TMDBMediaItem[]>([]);
+  const [exploreLoading, setExploreLoading] = useState(false);
+
   // Search Core States
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | 'hollywood' | 'bollywood' | 'anime'>('all');
@@ -103,7 +120,7 @@ export default function HomeScreen() {
     try {
       let key = await AsyncStorage.getItem('@movieshound_tmdb_key') || '';
       if (!key || key.trim() === '') {
-        key = process.env.EXPO_PUBLIC_TMDB_API_KEY || ''; // Load from local .env fallback
+        key = process.env.EXPO_PUBLIC_TMDB_API_KEY || '';
       }
       const proxy = await AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled') === 'true';
       const api = await AsyncStorage.getItem('@movieshound_tmdb_proxy_api') || '';
@@ -129,10 +146,15 @@ export default function HomeScreen() {
     }
   };
 
-  // Whenever TMDB credentials/settings or history load/change, trigger feed update
   useEffect(() => {
     loadFeeds();
   }, [tmdbKey, proxyEnabled, customApi, customImage]);
+
+  useEffect(() => {
+    if (currentTab === 'explore') {
+      loadExploreGenre(selectedGenre);
+    }
+  }, [currentTab, selectedGenre]);
 
   const loadDomains = async (force: boolean = false) => {
     const domains = await resolveAllDomains(setStatusMessage, force);
@@ -144,11 +166,9 @@ export default function HomeScreen() {
       setFeedsLoading(true);
       const config = await getTMDBConfig();
       
-      // Load Anime trends (always works, no API key needed)
       const animeTrends = await getTrendingAnime();
       setTrendingAnime(animeTrends);
 
-      // Load TMDB items if API Key is configured
       if (config.apiKey) {
         try {
           const hollywood = await getTrendingMovies();
@@ -157,11 +177,9 @@ export default function HomeScreen() {
           const bollywood = await getBollywoodMovies();
           setBollywoodHits(bollywood);
 
-          // Get personalized feeds
           const personalTMDB = await getPersonalizedTMDBRecommendations(clickHistoryTMDB);
           const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
 
-          // Interleave recommendations for a combined "For You" list
           const combined: (TMDBMediaItem | AniListAnimeItem)[] = [];
           const maxLen = Math.max(personalTMDB.length, personalAnime.length);
           for (let i = 0; i < maxLen; i++) {
@@ -170,13 +188,11 @@ export default function HomeScreen() {
           }
           setForYouFeed(combined);
         } catch (tmdbErr) {
-          console.warn('Failed to fetch TMDB feeds (could be bad key or proxy block):', tmdbErr);
-          // Default For You to Anime if TMDB fails
+          console.warn('Failed to fetch TMDB feeds:', tmdbErr);
           const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
           setForYouFeed(personalAnime);
         }
       } else {
-        // No TMDB Key, recommendation feed shows only anime
         const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
         setForYouFeed(personalAnime);
       }
@@ -184,6 +200,19 @@ export default function HomeScreen() {
       console.warn('Error loading recommendations feeds:', e);
     } finally {
       setFeedsLoading(false);
+    }
+  };
+
+  const loadExploreGenre = async (genreName: string) => {
+    try {
+      setExploreLoading(true);
+      const genreId = TMDB_GENRES[genreName];
+      const items = await discoverMediaByGenre(genreId);
+      setExploreMedia(items);
+    } catch (e) {
+      console.warn('Failed loading explore genre:', e);
+    } finally {
+      setExploreLoading(false);
     }
   };
 
@@ -223,7 +252,28 @@ export default function HomeScreen() {
     }
   };
 
-  // Save Settings to Storage
+  // Stream Trigger Action
+  const handleWatchStream = async (item: any) => {
+    try {
+      setResolvingStream(true);
+      setStatusMessage('Resolving Stream URL...');
+      const streamRes = await resolveStreamUrl(item.id, item.mediaType || 'movie');
+      if (streamRes) {
+        setActiveStreamUrl(streamRes.streamUrl);
+        setActiveStreamTitle(item.title);
+        setPlayerVisible(true);
+      } else {
+        setStatusMessage('Stream unavailable. Fallback to direct downloads.');
+      }
+    } catch (e) {
+      console.warn('Error launching stream:', e);
+    } finally {
+      setResolvingStream(false);
+      setStatusMessage('');
+    }
+  };
+
+  // Save Settings
   const updateSetting = async (key: string, value: string) => {
     try {
       await AsyncStorage.setItem(key, value);
@@ -231,9 +281,7 @@ export default function HomeScreen() {
       else if (key === '@movieshound_tmdb_proxy_enabled') setProxyEnabled(value === 'true');
       else if (key === '@movieshound_tmdb_proxy_api') setCustomApi(value);
       else if (key === '@movieshound_tmdb_proxy_image') setCustomImage(value);
-      else if (key === '@movieshound_accent_color') {
-        setAccentColor(value);
-      }
+      else if (key === '@movieshound_accent_color') setAccentColor(value);
     } catch (e) {
       console.warn('Failed saving setting:', e);
     }
@@ -245,7 +293,7 @@ export default function HomeScreen() {
     const startTime = Date.now();
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 5000); // 5s timeout
+      const id = setTimeout(() => controller.abort(), 5000);
 
       await fetch(url, { method: 'HEAD', signal: controller.signal });
       clearTimeout(id);
@@ -257,7 +305,6 @@ export default function HomeScreen() {
     }
   };
 
-  // Clear History Utility
   const clearHistory = async () => {
     await AsyncStorage.removeItem('@movieshound_history_clicks_tmdb');
     await AsyncStorage.removeItem('@movieshound_history_clicks_anilist');
@@ -266,7 +313,6 @@ export default function HomeScreen() {
     loadFeeds();
   };
 
-  // Core Search Submit Action (Handles optional fallback retries)
   const handleSearchSubmit = (
     searchQuery: string = query, 
     searchCategory: typeof category = category,
@@ -275,7 +321,6 @@ export default function HomeScreen() {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) return;
     
-    // Switch to Home tab
     setCurrentTab('home');
 
     searchId.current += 1;
@@ -341,7 +386,6 @@ export default function HomeScreen() {
         setStatusMessage('');
         
         if (resultsCountRef.current === 0) {
-          // If we did a search using IMDb ID (starts with tt) and it failed, fallback to Text Title search
           if (trimmedQuery.startsWith('tt') && fallbackTitle) {
             console.log(`IMDb ID search empty. Retrying with text title: ${fallbackTitle}`);
             setStatusMessage('IMDB EMPTY. RETRYING BY TITLE...');
@@ -356,7 +400,6 @@ export default function HomeScreen() {
     }, 15000);
   };
 
-  // High-accuracy search triggering (Fetches IMDb ID first)
   const handleSearchSubmitWithIMDb = async (
     title: string, 
     type: 'movie' | 'tv' | 'anime', 
@@ -365,8 +408,6 @@ export default function HomeScreen() {
   ) => {
     setCurrentTab('home');
     setQuery(title);
-    
-    // Set active category based on parameter
     setCategory(suggestedCategory);
 
     if (type !== 'anime' && tmdbId) {
@@ -384,7 +425,6 @@ export default function HomeScreen() {
       }
     }
 
-    // Default Fallback
     handleSearchSubmit(title, suggestedCategory);
   };
 
@@ -429,7 +469,6 @@ export default function HomeScreen() {
     }
   };
 
-  // Horizontal Feed Card Builder
   const renderFeedCard = (item: any, type: 'movie' | 'tv' | 'anime', suggestedCategory: typeof category = 'all') => {
     const isSaved = watchlist.some(i => i.id === item.id && i.mediaType === type);
     return (
@@ -455,7 +494,6 @@ export default function HomeScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* Direct Search overlay on poster (bottom-left) */}
           <TouchableOpacity
             style={styles.feedCardDownload}
             onPress={() => {
@@ -494,10 +532,9 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Main Content Area */}
-      {currentTab === 'home' ? (
+      {/* TAB 1: HOME */}
+      {currentTab === 'home' && (
         <View style={styles.tabContent}>
-          {/* Search Input Box */}
           <View style={styles.searchContainer}>
             <TextInput
               style={styles.searchInput}
@@ -519,7 +556,6 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Category Select Pills */}
           <View style={styles.categoryRow}>
             {(['all', 'hollywood', 'bollywood', 'anime'] as const).map((cat) => (
               <CategoryPill
@@ -531,7 +567,6 @@ export default function HomeScreen() {
             ))}
           </View>
 
-          {/* Status Indicators */}
           {statusMessage ? (
             <View style={styles.statusBox}>
               <Text style={[styles.statusText, { color: accentColor }]}>{statusMessage.toUpperCase()}</Text>
@@ -540,9 +575,7 @@ export default function HomeScreen() {
 
           {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
 
-          {/* Dynamic Feed Display */}
           {query.trim().length > 0 || results.length > 0 ? (
-            /* Search Results View */
             <FlatList
               data={results}
               keyExtractor={(item) => item.link}
@@ -559,13 +592,11 @@ export default function HomeScreen() {
               }
             />
           ) : (
-            /* Recommendations Mode */
             <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
               {feedsLoading && (
                 <ActivityIndicator size="small" color={accentColor} style={styles.feedSpinner} />
               )}
 
-              {/* Personal Recommendation Lane */}
               <View style={styles.feedLane}>
                 <Text style={styles.laneTitle}>FOR YOU (PERSONALIZED)</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
@@ -582,7 +613,6 @@ export default function HomeScreen() {
                 </ScrollView>
               </View>
 
-              {/* Hollywood Trends */}
               <View style={styles.feedLane}>
                 <Text style={styles.laneTitle}>TRENDING HOLLYWOOD</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
@@ -594,7 +624,6 @@ export default function HomeScreen() {
                 </ScrollView>
               </View>
 
-              {/* Bollywood Selection */}
               <View style={styles.feedLane}>
                 <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
@@ -606,7 +635,6 @@ export default function HomeScreen() {
                 </ScrollView>
               </View>
 
-              {/* Anime Trends */}
               <View style={styles.feedLane}>
                 <Text style={styles.laneTitle}>TRENDING ANIME</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
@@ -616,8 +644,54 @@ export default function HomeScreen() {
             </ScrollView>
           )}
         </View>
-      ) : (
-        /* Settings Tab (Me tab) */
+      )}
+
+      {/* TAB 2: EXPLORE (GENRES & FILTERS) */}
+      {currentTab === 'explore' && (
+        <View style={styles.tabContent}>
+          <Text style={styles.sectionHeaderTitle}>DISCOVER & EXPLORE</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genrePillScroll}>
+            {Object.keys(TMDB_GENRES).map((genreName) => (
+              <TouchableOpacity
+                key={genreName}
+                style={[
+                  styles.genrePill,
+                  selectedGenre === genreName && { backgroundColor: accentColor, borderColor: accentColor }
+                ]}
+                onPress={() => setSelectedGenre(genreName)}
+              >
+                <Text style={[
+                  styles.genrePillText,
+                  selectedGenre === genreName ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
+                ]}>
+                  {genreName.toUpperCase()}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {exploreLoading ? (
+            <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />
+          ) : (
+            <FlatList
+              data={exploreMedia}
+              keyExtractor={(item) => `explore-${item.id}`}
+              numColumns={3}
+              contentContainerStyle={styles.exploreGrid}
+              columnWrapperStyle={styles.exploreGridRow}
+              renderItem={({ item }) => renderFeedCard(item, 'movie', 'all')}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>NO TITLES FOUND IN THIS GENRE</Text>
+                </View>
+              }
+            />
+          )}
+        </View>
+      )}
+
+      {/* TAB 3: ME (WATCHLIST & SETTINGS) */}
+      {currentTab === 'me' && (
         <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
           <Text style={styles.sectionTitle}>MY WATCHLIST</Text>
           {watchlist.length > 0 ? (
@@ -779,13 +853,12 @@ export default function HomeScreen() {
         </ScrollView>
       )}
 
-      {/* Custom Bottom Tab Bar (Nothing OS design) */}
+      {/* YouTube-Style Bottom Navigation Bar */}
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => {
             if (currentTab === 'home') {
-              // Tapping HOME tab again resets active search state to reveal recommendations
               setQuery('');
               setResults([]);
               setCategory('all');
@@ -795,10 +868,29 @@ export default function HomeScreen() {
           }}
           activeOpacity={0.8}
         >
+          <Ionicons
+            name={currentTab === 'home' ? 'home' : 'home-outline'}
+            size={20}
+            color={currentTab === 'home' ? accentColor : 'rgba(255,255,255,0.4)'}
+          />
           <Text style={[styles.tabLabel, currentTab === 'home' ? { color: accentColor } : styles.tabInactive]}>
             HOME
           </Text>
-          {currentTab === 'home' && <View style={[styles.activeTabDot, { backgroundColor: accentColor }]} />}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabItem}
+          onPress={() => setCurrentTab('explore')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={currentTab === 'explore' ? 'compass' : 'compass-outline'}
+            size={20}
+            color={currentTab === 'explore' ? accentColor : 'rgba(255,255,255,0.4)'}
+          />
+          <Text style={[styles.tabLabel, currentTab === 'explore' ? { color: accentColor } : styles.tabInactive]}>
+            EXPLORE
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -806,14 +898,18 @@ export default function HomeScreen() {
           onPress={() => setCurrentTab('me')}
           activeOpacity={0.8}
         >
+          <Ionicons
+            name={currentTab === 'me' ? 'person' : 'person-outline'}
+            size={20}
+            color={currentTab === 'me' ? accentColor : 'rgba(255,255,255,0.4)'}
+          />
           <Text style={[styles.tabLabel, currentTab === 'me' ? { color: accentColor } : styles.tabInactive]}>
             ME
           </Text>
-          {currentTab === 'me' && <View style={[styles.activeTabDot, { backgroundColor: accentColor }]} />}
         </TouchableOpacity>
       </View>
 
-      {/* Nothing OS Styled Details Bottom Sheet Modal */}
+      {/* Media Details Sheet Modal (Matching Mockup with expo-linear-gradient) */}
       <Modal
         visible={sheetVisible}
         transparent={true}
@@ -837,7 +933,13 @@ export default function HomeScreen() {
               {selectedMedia && (
                 <ScrollView contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator={false}>
                   {selectedMedia.backdropUrl && (
-                    <Image source={{ uri: selectedMedia.backdropUrl }} style={styles.sheetBackdrop} resizeMode="cover" />
+                    <View style={styles.backdropContainer}>
+                      <Image source={{ uri: selectedMedia.backdropUrl }} style={styles.sheetBackdrop} resizeMode="cover" />
+                      <LinearGradient
+                        colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
+                        style={styles.backdropGradient}
+                      />
+                    </View>
                   )}
                   
                   <Text style={styles.sheetTitle}>{selectedMedia.title.toUpperCase()}</Text>
@@ -856,18 +958,36 @@ export default function HomeScreen() {
                     {selectedMedia.overview || 'NO DESCRIPTION AVAILABLE.'}
                   </Text>
 
+                  {/* Primary Action: WATCH STREAM */}
                   <TouchableOpacity
-                    style={[styles.sheetSearchButton, { backgroundColor: accentColor }]}
+                    style={[styles.sheetStreamButton, { backgroundColor: accentColor }]}
+                    onPress={() => {
+                      setSheetVisible(false);
+                      handleWatchStream(selectedMedia);
+                    }}
+                    disabled={resolvingStream}
+                  >
+                    {resolvingStream ? (
+                      <ActivityIndicator size="small" color="#0A0A0C" />
+                    ) : (
+                      <Text style={styles.sheetStreamButtonText}>▶ WATCH STREAM</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Secondary Action: DOWNLOAD OPTIONS */}
+                  <TouchableOpacity
+                    style={styles.sheetDownloadButton}
                     onPress={() => {
                       setSheetVisible(false);
                       handleSearchSubmitWithIMDb(
                         selectedMedia.title, 
                         selectedMedia.mediaType, 
-                        selectedMedia.id
+                        selectedMedia.id,
+                        selectedMedia.suggestedCategory || 'all'
                       );
                     }}
                   >
-                    <Text style={styles.sheetSearchButtonText}>FIND DOWNLOAD LINKS</Text>
+                    <Text style={styles.sheetDownloadButtonText}>↓ DOWNLOAD OPTIONS</Text>
                   </TouchableOpacity>
                 </ScrollView>
               )}
@@ -875,6 +995,17 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Native Video Player Modal */}
+      <VideoPlayerModal
+        visible={playerVisible}
+        videoUrl={activeStreamUrl}
+        title={activeStreamTitle}
+        onClose={() => {
+          setPlayerVisible(false);
+          setActiveStreamUrl(null);
+        }}
+      />
 
       {/* Invisible scraper WebViews */}
       <View style={styles.hiddenContainer}>
@@ -908,7 +1039,7 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 45, // Pushed down to clear the status bar / notch area
+    paddingTop: 45,
     paddingBottom: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1087,7 +1218,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 4,
     left: 4,
-    backgroundColor: '#FFE500', // Yellow badge
+    backgroundColor: '#FFE500',
     width: 24,
     height: 24,
     borderRadius: 4,
@@ -1099,7 +1230,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'LetteraMono',
     fontWeight: 'bold',
-    color: '#000000', // Black arrow
+    color: '#000000',
   },
   bookmarkStar: {
     fontSize: 12,
@@ -1119,6 +1250,41 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.4)',
     marginTop: 2,
     letterSpacing: 0.5,
+  },
+  sectionHeaderTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 14,
+    color: '#FFFFFF',
+    letterSpacing: 1.5,
+    marginHorizontal: 20,
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  genrePillScroll: {
+    paddingHorizontal: 20,
+    gap: 8,
+    marginBottom: 16,
+  },
+  genrePill: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  genrePillText: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    letterSpacing: 1,
+  },
+  exploreGrid: {
+    paddingHorizontal: 20,
+    paddingBottom: 30,
+  },
+  exploreGridRow: {
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
   settingsContent: {
     paddingHorizontal: 20,
@@ -1329,7 +1495,7 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
-    height: 58,
+    height: 60,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.1)',
     backgroundColor: '#0A0A0C',
@@ -1339,24 +1505,17 @@ const styles = StyleSheet.create({
   tabItem: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: '40%',
+    flex: 1,
     height: '100%',
-    position: 'relative',
   },
   tabLabel: {
     fontFamily: 'Ndot57',
-    fontSize: 13,
-    letterSpacing: 1.5,
+    fontSize: 9,
+    letterSpacing: 1,
+    marginTop: 4,
   },
   tabInactive: {
-    color: 'rgba(255,255,255,0.3)',
-  },
-  activeTabDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    position: 'absolute',
-    bottom: 6,
+    color: 'rgba(255,255,255,0.4)',
   },
   modalBackdrop: {
     flex: 1,
@@ -1364,7 +1523,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    maxHeight: '75%',
+    maxHeight: '80%',
     backgroundColor: '#0A0A0C',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
@@ -1406,13 +1565,23 @@ const styles = StyleSheet.create({
   sheetScroll: {
     padding: 20,
   },
+  backdropContainer: {
+    width: '100%',
+    height: 190,
+    marginBottom: 16,
+    position: 'relative',
+    overflow: 'hidden',
+  },
   sheetBackdrop: {
     width: '100%',
-    height: 180,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    marginBottom: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    height: '100%',
+  },
+  backdropGradient: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 90,
   },
   sheetTitle: {
     fontFamily: 'Ndot57',
@@ -1439,18 +1608,33 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     lineHeight: 18,
     letterSpacing: 0.5,
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  sheetSearchButton: {
+  sheetStreamButton: {
     height: 48,
     justifyContent: 'center',
     alignItems: 'center',
     borderRadius: 0,
+    marginBottom: 12,
   },
-  sheetSearchButtonText: {
+  sheetStreamButtonText: {
     fontFamily: 'Ndot57',
     fontSize: 13,
     color: '#0A0A0C',
+    letterSpacing: 1.5,
+  },
+  sheetDownloadButton: {
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFE500',
+    backgroundColor: 'rgba(255, 229, 0, 0.05)',
+  },
+  sheetDownloadButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#FFE500',
     letterSpacing: 1.5,
   },
   hiddenContainer: {

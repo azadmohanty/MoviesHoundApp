@@ -19,6 +19,28 @@ function extractDomainFromHtml(html) {
   return null;
 }
 
+async function resolveVidSrc() {
+  const mirrors = [
+    'https://vidsrc.sbs',
+    'https://vidsrc.cc',
+    'https://vidsrc.net',
+    'https://vidsrc.pro',
+    'https://v2.vidsrc.me'
+  ];
+  for (const url of mirrors) {
+    try {
+      const res = await fetch(`${url}/embed/movie/19995`, { method: 'HEAD' });
+      if (res.status === 200 || res.status === 301 || res.status === 302) {
+        console.log(`Resolved vidsrc -> ${url}`);
+        return url;
+      }
+    } catch (e) {
+      // Continue to next mirror
+    }
+  }
+  return null;
+}
+
 async function resolveDomain(key, url) {
   try {
     const response = await fetch(url);
@@ -55,6 +77,13 @@ async function main() {
     } else {
       console.log(`Keeping existing domain for ${key} -> ${domains[key]}`);
     }
+  }
+
+  const vidsrcResolved = await resolveVidSrc();
+  if (vidsrcResolved) {
+    domains['vidsrc'] = vidsrcResolved;
+  } else if (!domains['vidsrc']) {
+    domains['vidsrc'] = 'https://vidsrc.sbs';
   }
 
   fs.writeFileSync('domains.json', JSON.stringify(domains, null, 2));

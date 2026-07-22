@@ -160,3 +160,34 @@ export const getIMDbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<
     return null;
   }
 };
+
+export const TMDB_GENRES: Record<string, number> = {
+  Action: 28,
+  Adventure: 12,
+  Animation: 16,
+  Comedy: 35,
+  Crime: 80,
+  Drama: 18,
+  Horror: 27,
+  Romance: 10749,
+  SciFi: 878,
+  Thriller: 53,
+};
+
+export const discoverMediaByGenre = async (
+  genreId?: number,
+  page: number = 1,
+  year?: number,
+  sortBy: string = 'popularity.desc'
+): Promise<TMDBMediaItem[]> => {
+  const config = await getTMDBConfig();
+  let endpoint = `/discover/movie?sort_by=${sortBy}&page=${page}`;
+  if (genreId) {
+    endpoint += `&with_genres=${genreId}`;
+  }
+  if (year) {
+    endpoint += `&primary_release_year=${year}`;
+  }
+  const data = await fetchFromTMDB(endpoint);
+  return (data.results || []).map((item: any) => mapMediaItem(item, 'movie', config.imageBase));
+};
