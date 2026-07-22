@@ -3,16 +3,58 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type StreamResult = {
   streamUrl: string;
   sourceName: string;
+  isDirectStream?: boolean;
+};
+
+export const getStreamServerUrl = (
+  serverIndex: number,
+  tmdbId: number,
+  mediaType: 'movie' | 'tv' | 'anime',
+  season: number = 1,
+  episode: number = 1,
+  vidsrcBase: string = 'https://vidsrc.sbs'
+): string => {
+  const cleanBase = vidsrcBase.replace(/\/$/, '');
+  
+  if (serverIndex === 1) {
+    return mediaType === 'tv'
+      ? `${cleanBase}/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
+      : `${cleanBase}/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
+  }
+  if (serverIndex === 2) {
+    return mediaType === 'tv'
+      ? `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vidsrc.to/embed/movie/${tmdbId}`;
+  }
+  if (serverIndex === 3) {
+    return mediaType === 'tv'
+      ? `https://vidsrc.xyz/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vidsrc.xyz/embed/movie/${tmdbId}`;
+  }
+  if (serverIndex === 4) {
+    return mediaType === 'tv'
+      ? `https://multiembed.to/director.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
+      : `https://multiembed.to/director.php?video_id=${tmdbId}&tmdb=1`;
+  }
+  if (serverIndex === 5) {
+    return mediaType === 'tv'
+      ? `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}&season=${season}&episode=${episode}`
+      : `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}`;
+  }
+  if (serverIndex === 6) {
+    return `https://lok-lok.cc/spa/videoPlayPage/search?keyword=${tmdbId}`;
+  }
+  return '';
 };
 
 export const resolveStreamUrl = async (
   tmdbId: number,
   mediaType: 'movie' | 'tv' | 'anime',
   season: number = 1,
-  episode: number = 1
+  episode: number = 1,
+  serverIndex: number = 1
 ): Promise<StreamResult | null> => {
   try {
-    // 1. Check cached domains for vidsrc base URL
     const domainsRaw = await AsyncStorage.getItem('@movieshound_domains_cache');
     let vidsrcBase = 'https://vidsrc.sbs';
     if (domainsRaw) {
@@ -22,20 +64,12 @@ export const resolveStreamUrl = async (
       }
     }
 
-    // 2. Build target stream URL
-    let targetUrl = '';
-    if (mediaType === 'movie') {
-      targetUrl = `${vidsrcBase}/embed/movie/${tmdbId}`;
-    } else if (mediaType === 'tv') {
-      targetUrl = `${vidsrcBase}/embed/tv/${tmdbId}/${season}/${episode}`;
-    } else {
-      // For anime, fallback to vidsrc movie/tv embed
-      targetUrl = `${vidsrcBase}/embed/movie/${tmdbId}`;
-    }
+    const targetUrl = getStreamServerUrl(serverIndex, tmdbId, mediaType, season, episode, vidsrcBase);
 
     return {
       streamUrl: targetUrl,
-      sourceName: 'VidSrc Direct Stream'
+      sourceName: `Server ${serverIndex}`,
+      isDirectStream: false
     };
   } catch (error) {
     console.warn('Error resolving stream URL:', error);

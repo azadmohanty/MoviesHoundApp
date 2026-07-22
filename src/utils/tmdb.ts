@@ -9,6 +9,24 @@ export interface TMDBMediaItem {
   overview: string;
   mediaType: 'movie' | 'tv';
   rating: number;
+  voteCount: number;
+  voteCountFormatted: string;
+}
+
+export interface CastMember {
+  id: number;
+  name: string;
+  character: string;
+  profileUrl: string;
+  knownForDepartment: string;
+}
+
+export interface TVShowDetails {
+  id: number;
+  title: string;
+  numberOfSeasons: number;
+  numberOfEpisodes: number;
+  seasons: { seasonNumber: number; name: string; episodeCount: number }[];
 }
 
 export interface TMDBConfig {
@@ -16,6 +34,17 @@ export interface TMDBConfig {
   apiBase: string;
   imageBase: string;
 }
+
+export const formatVoteCount = (count: number): string => {
+  if (!count || count === 0) return '0';
+  if (count >= 1000000) {
+    return (count / 1000000).toFixed(1) + 'M';
+  }
+  if (count >= 1000) {
+    return (count / 1000).toFixed(1) + 'K';
+  }
+  return count.toString();
+};
 
 export const getTMDBConfig = async (): Promise<TMDBConfig> => {
   let apiKey = await AsyncStorage.getItem('@movieshound_tmdb_key');
@@ -26,10 +55,8 @@ export const getTMDBConfig = async (): Promise<TMDBConfig> => {
   const customApi = await AsyncStorage.getItem('@movieshound_tmdb_proxy_api');
   const customImage = await AsyncStorage.getItem('@movieshound_tmdb_proxy_image');
 
-  // If proxy is enabled, we map the base url. We ensure wmdb proxy has /3 appended if it doesn't.
   let apiBase = proxyEnabled ? (customApi || 'https://tmdb-api.wmdb.tv') : 'https://api.tmdb.org/3';
   if (proxyEnabled && !customApi) {
-    // wmdb.tv requires /3 for standard v3 endpoints, so let's append it
     apiBase = 'https://tmdb-api.wmdb.tv/3';
   }
 
@@ -56,13 +83,10 @@ const fetchFromTMDB = async (endpoint: string, params: Record<string, string> = 
 
   let url = '';
 
-  // If the key is long (Access Token JWT format), pass it as Bearer header.
-  // This bypasses India ISP DPI blocks on the "api_key=" query parameter.
   if (config.apiKey.length > 50) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
     url = `${config.apiBase}${endpoint}?${urlParams.toString()}`;
   } else {
-    // Fallback to query parameter v3 key (which will block in India, but works elsewhere)
     urlParams.append('api_key', config.apiKey);
     url = `${config.apiBase}${endpoint}?${urlParams.toString()}`;
   }
@@ -77,6 +101,7 @@ const fetchFromTMDB = async (endpoint: string, params: Record<string, string> = 
 const mapMediaItem = (item: any, mediaType: 'movie' | 'tv', imageBase: string): TMDBMediaItem => {
   const title = item.title || item.name || 'Untitled';
   const releaseDate = item.release_date || item.first_air_date || 'N/A';
+  const voteCount = item.vote_count || 0;
   return {
     id: item.id,
     title,
@@ -85,7 +110,9 @@ const mapMediaItem = (item: any, mediaType: 'movie' | 'tv', imageBase: string): 
     releaseDate,
     overview: item.overview || '',
     mediaType,
-    rating: item.vote_average || 0
+    rating: item.vote_average || 0,
+    voteCount,
+    voteCountFormatted: formatVoteCount(voteCount)
   };
 };
 
@@ -190,4 +217,83 @@ export const discoverMediaByGenre = async (
   }
   const data = await fetchFromTMDB(endpoint);
   return (data.results || []).map((item: any) => mapMediaItem(item, 'movie', config.imageBase));
+};
+
+export const getMediaCredits = async (
+  id: number,
+  mediaType: 'movie' | 'tv'
+): Promise<CastMember[]> => {
+  try {
+    const config = await getTMDBConfig();
+    const data = await fetchFromTMDB(`/${mediaType}/${id}/credits`);
+    const cast = (data.cast || []).slice(0, 10).map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      character: c.character || c.job || 'Cast',
+      profileUrl: c.profile_path ? `${config.imageBase}/w185${c.profile_path}` : 'https://via.placeholder.com/185x278?text=No+Photo',
+      knownForDepartment: c.known_for_department || 'Acting',
+    }));
+    return cast;
+  } catch (e) {
+    console.warn(`Failed fetching credits for ${mediaType} ${id}:`, e);
+    return [];
+  }
+};
+
+export const getPersonCredits = async (personId: number): Promise<TMDBMediaItem[]> => {
+  try {
+    const config = await getTMDBConfig();
+    const data = await fetchFromTMDB(`/person/${personId}/movie_credits`);
+    return (data.cast || []).slice(0, 15).map((item: any) => mapMediaItem(item, 'movie', config.imageBase));
+  } catch (e) {
+    console.warn(`Failed fetching person credits for ${personId}:`, e);
+    return [];
+  }
+};
+
+export const getSimilarMedia = async (
+  id: number,
+  mediaType: 'movie' | 'tv'
+): Promise<TMDBMediaItem[]> => {
+  try {
+    const config = await getTMDBConfig();
+    const data = await fetchFromTMDB(`/${mediaType}/${id}/recommendations`);
+    return (data.results || []).slice(0, 10).map((item: any) => mapMediaItem(item, mediaType, config.imageBase));
+  } catch (e) {
+    console.warn(`Failed fetching similar media for ${mediaType} ${id}:`, e);
+    return [];
+  }
+};
+
+export const getTVShowDetails = async (id: number): Promise<TVShowDetails | null> => {
+  try {
+    const data = await fetchFromTMDB(`/tv/${id}`);
+    return {
+      id: data.id,
+      title: data.name,
+      numberOfSeasons: data.number_of_seasons || 1,
+      numberOfEpisodes: data.number_of_episodes || 1,
+      seasons: (data.seasons || []).map((s: any) => ({
+        seasonNumber: s.season_number,
+        name: s.name,
+        episodeCount: s.episode_count || 1,
+      })).filter((s: any) => s.seasonNumber > 0)
+    };
+  } catch (e) {
+    console.warn(`Failed fetching TV details for ${id}:`, e);
+    return null;
+  }
+};
+
+export const searchTMDB = async (query: string): Promise<TMDBMediaItem[]> => {
+  try {
+    const config = await getTMDBConfig();
+    const data = await fetchFromTMDB('/search/multi', { query });
+    return (data.results || [])
+      .filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
+      .map((item: any) => mapMediaItem(item, item.media_type, config.imageBase));
+  } catch (e) {
+    console.warn('Failed searching TMDB:', e);
+    return [];
+  }
 };

@@ -7,14 +7,17 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
-  SafeAreaView,
   StatusBar,
   Linking,
   Image,
   ScrollView,
   Switch,
-  Modal
+  Modal,
+  LayoutAnimation,
+  Platform,
+  UIManager
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,11 +34,13 @@ import {
   getTrendingTVShows,
   getBollywoodMovies,
   getPersonalizedTMDBRecommendations,
+  getPersonCredits,
   TMDBMediaItem,
   getTMDBConfig,
   getIMDbId,
   discoverMediaByGenre,
-  TMDB_GENRES
+  TMDB_GENRES,
+  searchTMDB
 } from '../utils/tmdb';
 import {
   getTrendingAnime,
@@ -43,6 +48,8 @@ import {
   getPersonalizedAnimeRecommendations,
   AniListAnimeItem
 } from '../utils/anilist';
+
+
 
 type SearchTask = {
   siteKey: string;
@@ -63,15 +70,18 @@ export default function HomeScreen() {
   // Theme Accent State
   const [accentColor, setAccentColor] = useState('#FF2D55'); // Default: Nothing Red
 
-  // Bottom Sheet Details State
-  const [selectedMedia, setSelectedMedia] = useState<any>(null);
-  const [sheetVisible, setSheetVisible] = useState(false);
-
   // Native Video Player State
   const [playerVisible, setPlayerVisible] = useState(false);
   const [activeStreamUrl, setActiveStreamUrl] = useState<string | null>(null);
   const [activeStreamTitle, setActiveStreamTitle] = useState('');
+  const [activeMediaItem, setActiveMediaItem] = useState<any>(null);
   const [resolvingStream, setResolvingStream] = useState(false);
+
+  // Artist Portfolio State
+  const [artistModalVisible, setArtistModalVisible] = useState(false);
+  const [artistName, setArtistName] = useState('');
+  const [artistCredits, setArtistCredits] = useState<TMDBMediaItem[]>([]);
+  const [loadingArtist, setLoadingArtist] = useState(false);
 
   // Settings & Credentials States
   const [tmdbKey, setTmdbKey] = useState('');
@@ -81,6 +91,7 @@ export default function HomeScreen() {
 
   // Watchlist & History States
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [watchedList, setWatchedList] = useState<{ id: number; type: string }[]>([]);
   const [clickHistoryTMDB, setClickHistoryTMDB] = useState<{ id: number; type: 'movie' | 'tv' }[]>([]);
   const [clickHistoryAnime, setClickHistoryAnime] = useState<number[]>([]);
 
@@ -89,13 +100,19 @@ export default function HomeScreen() {
 
   // Recommendation Feeds States
   const [feedsLoading, setFeedsLoading] = useState(false);
+  const [heroIndex, setHeroIndex] = useState(0);
+  const [heroMedia, setHeroMedia] = useState<TMDBMediaItem | null>(null);
   const [forYouFeed, setForYouFeed] = useState<(TMDBMediaItem | AniListAnimeItem)[]>([]);
   const [trendingHollywood, setTrendingHollywood] = useState<TMDBMediaItem[]>([]);
+  const [trendingTV, setTrendingTV] = useState<TMDBMediaItem[]>([]);
   const [bollywoodHits, setBollywoodHits] = useState<TMDBMediaItem[]>([]);
   const [trendingAnime, setTrendingAnime] = useState<AniListAnimeItem[]>([]);
 
-  // Explore Tab Discovery States
+  // Explore Tab Discovery States (Expanded Granular Controls)
+  const [exploreType, setExploreType] = useState<'movie' | 'tv'>('movie');
   const [selectedGenre, setSelectedGenre] = useState<string>('Action');
+  const [selectedYear, setSelectedYear] = useState<string>('ALL YEARS');
+  const [selectedRating, setSelectedRating] = useState<number>(0);
   const [exploreMedia, setExploreMedia] = useState<TMDBMediaItem[]>([]);
   const [exploreLoading, setExploreLoading] = useState(false);
 
@@ -106,9 +123,34 @@ export default function HomeScreen() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Initializing...');
+  const [searchSuggestions, setSearchSuggestions] = useState<TMDBMediaItem[]>([]);
+  const [tmdbSearchResults, setTmdbSearchResults] = useState<TMDBMediaItem[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchMode, setSearchMode] = useState<'movies' | 'downloads'>('movies');
+  const [downloadResults, setDownloadResults] = useState<SearchResult[]>([]);
+  const [downloadLoading, setDownloadLoading] = useState(false);
   const [searchTasks, setSearchTasks] = useState<SearchTask[]>([]);
   const searchId = useRef(0);
   const resultsCountRef = useRef(0);
+
+  // Year options list (Complete Freedom)
+  const YEAR_OPTIONS = [
+    'ALL YEARS', '2026', '2025', '2024', '2023', '2022', '2021', '2020',
+    '2019', '2018', '2017', '2016', '2015', '2010s', '2000s', '1990s', '1980s'
+  ];
+
+  // Rating options list
+  const RATING_OPTIONS = [
+    { label: 'ALL RATINGS', value: 0 },
+    { label: '9.0+ MASTERPIECES', value: 9.0 },
+    { label: '8.5+', value: 8.5 },
+    { label: '8.0+', value: 8.0 },
+    { label: '7.5+', value: 7.5 },
+    { label: '7.0+', value: 7.0 },
+    { label: '6.5+', value: 6.5 },
+    { label: '6.0+', value: 6.0 },
+  ];
 
   // Initialize
   useEffect(() => {
@@ -136,11 +178,17 @@ export default function HomeScreen() {
       const listRaw = await AsyncStorage.getItem('@movieshound_watchlist');
       if (listRaw) setWatchlist(JSON.parse(listRaw));
 
+      const watchedRaw = await AsyncStorage.getItem('@movieshound_watched_list');
+      if (watchedRaw) setWatchedList(JSON.parse(watchedRaw));
+
       const histTMDBRaw = await AsyncStorage.getItem('@movieshound_history_clicks_tmdb');
       if (histTMDBRaw) setClickHistoryTMDB(JSON.parse(histTMDBRaw));
 
       const histAnimeRaw = await AsyncStorage.getItem('@movieshound_history_clicks_anilist');
       if (histAnimeRaw) setClickHistoryAnime(JSON.parse(histAnimeRaw));
+
+      const recentRaw = await AsyncStorage.getItem('@movieshound_recent_searches');
+      if (recentRaw) setRecentSearches(JSON.parse(recentRaw));
     } catch (e) {
       console.warn('Failed to load settings from storage:', e);
     }
@@ -152,9 +200,39 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (currentTab === 'explore') {
-      loadExploreGenre(selectedGenre);
+      loadExploreData();
     }
-  }, [currentTab, selectedGenre]);
+  }, [currentTab, exploreType, selectedGenre, selectedYear, selectedRating]);
+
+  useEffect(() => {
+    if (trendingHollywood.length > 0) {
+      const interval = setInterval(() => {
+        setHeroIndex(prev => (prev + 1) % Math.min(trendingHollywood.length, 5));
+      }, 8000);
+      return () => clearInterval(interval);
+    }
+  }, [trendingHollywood]);
+
+  useEffect(() => {
+    if (trendingHollywood.length > 0) {
+      setHeroMedia(trendingHollywood[heroIndex]);
+    }
+  }, [heroIndex, trendingHollywood]);
+
+  useEffect(() => {
+    const delayDebounce = setTimeout(async () => {
+      if (query.trim().length > 1) {
+        const sugg = await searchTMDB(query);
+        setSearchSuggestions(sugg.slice(0, 5));
+        setShowSuggestions(true);
+      } else {
+        setSearchSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(delayDebounce);
+  }, [query]);
 
   const loadDomains = async (force: boolean = false) => {
     const domains = await resolveAllDomains(setStatusMessage, force);
@@ -173,6 +251,10 @@ export default function HomeScreen() {
         try {
           const hollywood = await getTrendingMovies();
           setTrendingHollywood(hollywood);
+          if (hollywood.length > 0) setHeroMedia(hollywood[0]);
+
+          const tvShows = await getTrendingTVShows();
+          setTrendingTV(tvShows);
 
           const bollywood = await getBollywoodMovies();
           setBollywoodHits(bollywood);
@@ -203,14 +285,23 @@ export default function HomeScreen() {
     }
   };
 
-  const loadExploreGenre = async (genreName: string) => {
+  const loadExploreData = async () => {
     try {
       setExploreLoading(true);
-      const genreId = TMDB_GENRES[genreName];
-      const items = await discoverMediaByGenre(genreId);
-      setExploreMedia(items);
+      const genreId = TMDB_GENRES[selectedGenre];
+      let numericYear: number | undefined = undefined;
+      if (selectedYear !== 'ALL YEARS') {
+        const parsed = parseInt(selectedYear, 10);
+        if (!isNaN(parsed)) numericYear = parsed;
+      }
+      const items = await discoverMediaByGenre(genreId, 1, numericYear);
+      let filtered = items;
+      if (selectedRating > 0) {
+        filtered = filtered.filter(i => i.rating >= selectedRating);
+      }
+      setExploreMedia(filtered);
     } catch (e) {
-      console.warn('Failed loading explore genre:', e);
+      console.warn('Failed loading explore data:', e);
     } finally {
       setExploreLoading(false);
     }
@@ -218,6 +309,7 @@ export default function HomeScreen() {
 
   // Watchlist Actions
   const toggleWatchlist = async (item: WatchlistItem) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     try {
       let list = [...watchlist];
       const exists = list.some(i => i.id === item.id && i.mediaType === item.mediaType);
@@ -230,6 +322,24 @@ export default function HomeScreen() {
       setWatchlist(list);
     } catch (e) {
       console.warn('Failed to toggle watchlist:', e);
+    }
+  };
+
+  // Watched Status Actions
+  const toggleWatched = async (id: number, type: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    try {
+      let list = [...watchedList];
+      const exists = list.some(i => i.id === id && i.type === type);
+      if (exists) {
+        list = list.filter(i => !(i.id === id && i.type === type));
+      } else {
+        list.push({ id, type });
+      }
+      await AsyncStorage.setItem('@movieshound_watched_list', JSON.stringify(list));
+      setWatchedList(list);
+    } catch (e) {
+      console.warn('Failed to toggle watched:', e);
     }
   };
 
@@ -252,7 +362,7 @@ export default function HomeScreen() {
     }
   };
 
-  // Stream Trigger Action
+  // Stream Trigger Action (Launches YouTube-Style Player)
   const handleWatchStream = async (item: any) => {
     try {
       setResolvingStream(true);
@@ -261,6 +371,7 @@ export default function HomeScreen() {
       if (streamRes) {
         setActiveStreamUrl(streamRes.streamUrl);
         setActiveStreamTitle(item.title);
+        setActiveMediaItem(item);
         setPlayerVisible(true);
       } else {
         setStatusMessage('Stream unavailable. Fallback to direct downloads.');
@@ -270,6 +381,21 @@ export default function HomeScreen() {
     } finally {
       setResolvingStream(false);
       setStatusMessage('');
+    }
+  };
+
+  // Artist Portfolio Action
+  const handleOpenArtist = async (personId: number, personName: string) => {
+    setArtistName(personName);
+    setArtistModalVisible(true);
+    setLoadingArtist(true);
+    try {
+      const credits = await getPersonCredits(personId);
+      setArtistCredits(credits);
+    } catch (e) {
+      console.warn('Failed loading artist credits:', e);
+    } finally {
+      setLoadingArtist(false);
     }
   };
 
@@ -313,88 +439,114 @@ export default function HomeScreen() {
     loadFeeds();
   };
 
-  const handleSearchSubmit = (
+  const handleSearchSubmit = async (
     searchQuery: string = query, 
-    searchCategory: typeof category = category,
-    fallbackTitle?: string
+    searchCategory: typeof category = category
   ) => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) return;
     
     setCurrentTab('home');
+    setSearchMode('movies');
+    setResults([]);
+    setLoading(true);
+    setStatusMessage('Searching titles...');
 
-    searchId.current += 1;
-    const currentId = searchId.current;
+    // Save recent searches
+    let updatedRecent = [trimmedQuery, ...recentSearches.filter(s => s !== trimmedQuery)].slice(0, 3);
+    setRecentSearches(updatedRecent);
+    await AsyncStorage.setItem('@movieshound_recent_searches', JSON.stringify(updatedRecent));
 
+    try {
+      const searchRes = await searchTMDB(trimmedQuery);
+      setTmdbSearchResults(searchRes);
+    } catch (e) {
+      console.warn('Error searching TMDB:', e);
+    } finally {
+      setLoading(false);
+      setStatusMessage('');
+      setShowSuggestions(false);
+    }
+  };
+
+  const runDownloadScraper = async (
+    title: string,
+    mediaType: 'movie' | 'tv' | 'anime',
+    tmdbId?: number
+  ) => {
+    setSearchMode('downloads');
     setResults([]);
     resultsCountRef.current = 0;
     setLoading(true);
     setStatusMessage('Bypassing security...');
 
+    let searchQuery = title;
+    if (mediaType !== 'anime' && tmdbId) {
+      try {
+        const imdbId = await getIMDbId(tmdbId, mediaType);
+        if (imdbId) {
+          searchQuery = imdbId;
+        }
+      } catch (err) {
+        console.warn('Error fetching IMDb ID:', err);
+      }
+    }
+
+    // Resolve original language to target sites first (Smart Dubbing)
+    let lang = 'en';
+    if (tmdbId && mediaType !== 'anime') {
+      try {
+        const response = await fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${tmdbKey}`);
+        const detailsData = await response.json();
+        lang = detailsData.original_language || 'en';
+      } catch (err) {
+        console.warn('Error getting language details:', err);
+      }
+    }
+
+    searchId.current += 1;
+    const currentId = searchId.current;
     const tasks: SearchTask[] = [];
 
-    if (searchCategory === 'all' || searchCategory === 'hollywood') {
-      if (resolvedDomains.vegamovies) {
-        tasks.push({
-          siteKey: 'Vegamovies',
-          searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
-      if (resolvedDomains.moviesmod) {
-        tasks.push({
-          siteKey: 'MoviesMod',
-          searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
-    }
-
-    if (searchCategory === 'all' || searchCategory === 'bollywood') {
-      if (resolvedDomains.rogmovies) {
-        tasks.push({
-          siteKey: 'RogMovies',
-          searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
-      if (resolvedDomains.topmovies) {
-        tasks.push({
-          siteKey: 'TopMovies',
-          searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
-    }
-
-    if (searchCategory === 'all' || searchCategory === 'anime') {
-      if (resolvedDomains.gokuhd) {
-        tasks.push({
-          siteKey: 'GokuHD',
-          searchUrl: `${resolvedDomains.gokuhd}/?s=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
-      if (resolvedDomains.animeflix) {
-        tasks.push({
-          siteKey: 'Animeflix',
-          searchUrl: `${resolvedDomains.animeflix}/?s=${encodeURIComponent(trimmedQuery)}`
-        });
-      }
+    // Target based on category / type / language
+    if (mediaType === 'anime' || category === 'anime') {
+      if (resolvedDomains.gokuhd) tasks.push({ siteKey: 'GokuHD', searchUrl: `${resolvedDomains.gokuhd}/?s=${encodeURIComponent(searchQuery)}` });
+      if (resolvedDomains.animeflix) tasks.push({ siteKey: 'Animeflix', searchUrl: `${resolvedDomains.animeflix}/?s=${encodeURIComponent(searchQuery)}` });
+    } else if (lang === 'hi' || category === 'bollywood') {
+      if (resolvedDomains.rogmovies) tasks.push({ siteKey: 'RogMovies', searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(searchQuery)}` });
+      if (resolvedDomains.topmovies) tasks.push({ siteKey: 'TopMovies', searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(searchQuery)}` });
+    } else {
+      if (resolvedDomains.vegamovies) tasks.push({ siteKey: 'Vegamovies', searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(searchQuery)}` });
+      if (resolvedDomains.moviesmod) tasks.push({ siteKey: 'MoviesMod', searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(searchQuery)}` });
     }
 
     setSearchTasks(tasks);
 
+    // Fallback timer: if 0 links after 6 seconds, search other sites to find dubbed dual-audio
+    setTimeout(() => {
+      if (searchId.current === currentId && resultsCountRef.current === 0) {
+        setStatusMessage('Searching fallback sources...');
+        const fallbackTasks: SearchTask[] = [];
+        if (mediaType !== 'anime' && category !== 'anime') {
+          if (lang === 'hi' || category === 'bollywood') {
+            if (resolvedDomains.vegamovies) fallbackTasks.push({ siteKey: 'Vegamovies', searchUrl: `${resolvedDomains.vegamovies}/search.html?q=${encodeURIComponent(title)}` });
+            if (resolvedDomains.moviesmod) fallbackTasks.push({ siteKey: 'MoviesMod', searchUrl: `${resolvedDomains.moviesmod}/?s=${encodeURIComponent(title)}` });
+          } else {
+            if (resolvedDomains.rogmovies) fallbackTasks.push({ siteKey: 'RogMovies', searchUrl: `${resolvedDomains.rogmovies}/?s=${encodeURIComponent(title)}` });
+            if (resolvedDomains.topmovies) fallbackTasks.push({ siteKey: 'TopMovies', searchUrl: `${resolvedDomains.topmovies}/?s=${encodeURIComponent(title)}` });
+          }
+        }
+        setSearchTasks(prev => [...prev, ...fallbackTasks]);
+      }
+    }, 6000);
+
+    // Stop loading after 15 seconds max
     setTimeout(() => {
       if (searchId.current === currentId) {
         setLoading(false);
         setStatusMessage('');
-        
         if (resultsCountRef.current === 0) {
-          if (trimmedQuery.startsWith('tt') && fallbackTitle) {
-            console.log(`IMDb ID search empty. Retrying with text title: ${fallbackTitle}`);
-            setStatusMessage('IMDB EMPTY. RETRYING BY TITLE...');
-            handleSearchSubmit(fallbackTitle, searchCategory);
-          } else {
-            console.log('Search timed out with 0 results. Triggering domain refresh...');
-            setStatusMessage('SEARCH FAILED. REFRESHING DOMAINS...');
-            loadDomains(true);
-          }
+          setStatusMessage('NO DOWNLOAD LINKS RESOLVED');
         }
       }
     }, 15000);
@@ -409,23 +561,7 @@ export default function HomeScreen() {
     setCurrentTab('home');
     setQuery(title);
     setCategory(suggestedCategory);
-
-    if (type !== 'anime' && tmdbId) {
-      setLoading(true);
-      setStatusMessage('Fetching IMDb ID for accuracy...');
-      try {
-        const imdbId = await getIMDbId(tmdbId, type);
-        if (imdbId) {
-          console.log(`Found IMDb ID: ${imdbId} for title: ${title}. Running targeted search.`);
-          handleSearchSubmit(imdbId, suggestedCategory, title);
-          return;
-        }
-      } catch (err) {
-        console.warn('Error fetching IMDb ID:', err);
-      }
-    }
-
-    handleSearchSubmit(title, suggestedCategory);
+    runDownloadScraper(title, type, tmdbId);
   };
 
   const handleWebViewMessage = (siteKey: string, html: string) => {
@@ -458,7 +594,6 @@ export default function HomeScreen() {
         secondaryToolbarColor: '#0A0A0C',
       });
     } catch (e) {
-      console.warn('Failed to open browser for URL:', url, e);
       let targetUrl = url;
       if (targetUrl.startsWith('//')) {
         targetUrl = 'https:' + targetUrl;
@@ -471,20 +606,23 @@ export default function HomeScreen() {
 
   const renderFeedCard = (item: any, type: 'movie' | 'tv' | 'anime', suggestedCategory: typeof category = 'all') => {
     const isSaved = watchlist.some(i => i.id === item.id && i.mediaType === type);
+    const isWatched = watchedList.some(i => i.id === item.id && i.type === type);
+    const voteFormatted = 'voteCountFormatted' in item ? item.voteCountFormatted : null;
+
     return (
       <View key={`${type}-${item.id}`} style={styles.feedCard}>
         <View style={styles.posterWrapper}>
           <TouchableOpacity
             onPress={() => {
               trackMediaClick(item.id, type);
-              setSelectedMedia({ ...item, mediaType: type, suggestedCategory });
-              setSheetVisible(true);
+              handleWatchStream({ ...item, mediaType: type, suggestedCategory });
             }}
             activeOpacity={0.8}
           >
             <Image source={{ uri: item.posterUrl }} style={styles.feedPoster} />
           </TouchableOpacity>
           
+          {/* Watchlist Star Button (Top Right) */}
           <TouchableOpacity
             style={styles.feedCardBookmark}
             onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: type })}
@@ -494,6 +632,14 @@ export default function HomeScreen() {
             </Text>
           </TouchableOpacity>
 
+          {/* Watched Status Indicator (Top Left) */}
+          {isWatched && (
+            <View style={styles.watchedBadge}>
+              <Text style={styles.watchedCheck}>✓</Text>
+            </View>
+          )}
+
+          {/* Download Yellow Badge (Bottom Left) */}
           <TouchableOpacity
             style={styles.feedCardDownload}
             onPress={() => {
@@ -501,17 +647,15 @@ export default function HomeScreen() {
               handleSearchSubmitWithIMDb(item.title, type, item.id, suggestedCategory);
             }}
           >
-            <Text style={styles.downloadArrow}>
-              ↓
-            </Text>
+            <Text style={styles.downloadArrow}>↓</Text>
           </TouchableOpacity>
         </View>
 
         <Text style={styles.feedCardTitle} numberOfLines={1}>
           {item.title.toUpperCase()}
         </Text>
-        <Text style={styles.feedCardSubtitle}>
-          {item.releaseDate} • {item.rating ? `${item.rating.toFixed(1)} ★` : 'N/A'}
+        <Text style={styles.feedCardSubtitle} numberOfLines={1}>
+          {item.releaseDate} • {item.rating ? `★ ${item.rating.toFixed(1)}` : 'N/A'} {voteFormatted ? `(${voteFormatted})` : ''}
         </Text>
       </View>
     );
@@ -523,7 +667,7 @@ export default function HomeScreen() {
 
       {/* Header Bar */}
       <View style={styles.header}>
-        <Text style={styles.brandTitle}>MOVIESHOUND</Text>
+        <Text style={styles.brandTitle}>HOLOGRAM</Text>
         <TouchableOpacity onPress={() => loadDomains(true)} style={styles.statusRow}>
           <View style={[styles.statusDot, Object.keys(resolvedDomains).length > 0 ? { backgroundColor: accentColor } : styles.dotRed]} />
           <Text style={styles.brandSubtitle}>
@@ -535,25 +679,95 @@ export default function HomeScreen() {
       {/* TAB 1: HOME */}
       {currentTab === 'home' && (
         <View style={styles.tabContent}>
-          <View style={styles.searchContainer}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="SEARCH MULTIPLE SITES..."
-              placeholderTextColor="rgba(255,255,255,0.3)"
-              value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={() => handleSearchSubmit()}
-              autoCorrect={false}
-              returnKeyType="search"
-            />
-            {query.length > 0 && (
-              <TouchableOpacity style={styles.clearSearchInput} onPress={() => { setQuery(''); setResults([]); }}>
-                <Text style={styles.clearSearchInputText}>×</Text>
+          <View style={{ zIndex: 1000 }}>
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="SEARCH MOVIES & SERIES..."
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={query}
+                onChangeText={(text) => {
+                  setQuery(text);
+                  if (text.trim() === '') {
+                    setSearchSuggestions([]);
+                    setShowSuggestions(false);
+                    setTmdbSearchResults([]);
+                    setResults([]);
+                  }
+                }}
+                onSubmitEditing={() => handleSearchSubmit()}
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              {query.length > 0 && (
+                <TouchableOpacity
+                  style={styles.clearSearchInput}
+                  onPress={() => {
+                    setQuery('');
+                    setSearchSuggestions([]);
+                    setShowSuggestions(false);
+                    setTmdbSearchResults([]);
+                    setResults([]);
+                  }}
+                >
+                  <Text style={styles.clearSearchInputText}>×</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.searchButton} onPress={() => handleSearchSubmit()}>
+                <Text style={styles.searchButtonText}>GO</Text>
               </TouchableOpacity>
+            </View>
+
+            {/* Search Suggestions Dropdown */}
+            {showSuggestions && searchSuggestions.length > 0 && (
+              <View style={styles.suggestionsContainer}>
+                {searchSuggestions.map((item) => (
+                  <View key={`sugg-${item.id}`} style={styles.suggestionItem}>
+                    <TouchableOpacity
+                      style={styles.suggestionTitleBtn}
+                      onPress={() => {
+                        setQuery(item.title);
+                        setShowSuggestions(false);
+                        handleWatchStream(item);
+                      }}
+                    >
+                      <Text style={styles.suggestionText} numberOfLines={1}>
+                        {item.title.toUpperCase()} ({item.releaseDate ? item.releaseDate.split('-')[0] : 'N/A'})
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.suggestionDownloadBtn}
+                      onPress={() => {
+                        setQuery(item.title);
+                        setShowSuggestions(false);
+                        runDownloadScraper(item.title, item.mediaType || 'movie', item.id);
+                      }}
+                    >
+                      <Text style={[styles.suggestionDownloadIcon, { color: accentColor }]}>↓</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
             )}
-            <TouchableOpacity style={styles.searchButton} onPress={() => handleSearchSubmit()}>
-              <Text style={styles.searchButtonText}>GO</Text>
-            </TouchableOpacity>
+
+            {/* Recent Searches Row */}
+            {recentSearches.length > 0 && query.length === 0 && (
+              <View style={styles.recentSearchesContainer}>
+                <Text style={styles.recentSearchesLabel}>RECENT:</Text>
+                {recentSearches.map((term, idx) => (
+                  <TouchableOpacity
+                    key={`recent-${idx}`}
+                    style={styles.recentSearchPill}
+                    onPress={() => {
+                      setQuery(term);
+                      handleSearchSubmit(term);
+                    }}
+                  >
+                    <Text style={styles.recentSearchPillText}>{term.toUpperCase()}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
 
           <View style={styles.categoryRow}>
@@ -575,7 +789,16 @@ export default function HomeScreen() {
 
           {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
 
-          {query.trim().length > 0 || results.length > 0 ? (
+          {searchMode === 'movies' && tmdbSearchResults.length > 0 ? (
+            <FlatList
+              data={tmdbSearchResults}
+              keyExtractor={(item) => `search-tmdb-${item.id}`}
+              numColumns={3}
+              contentContainerStyle={styles.exploreGrid}
+              columnWrapperStyle={styles.exploreGridRow}
+              renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+            />
+          ) : searchMode === 'downloads' && (results.length > 0 || loading) ? (
             <FlatList
               data={results}
               keyExtractor={(item) => item.link}
@@ -586,13 +809,41 @@ export default function HomeScreen() {
               ListEmptyComponent={
                 !loading ? (
                   <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
+                    <Text style={styles.emptyText}>NO DOWNLOAD LINKS FOUND</Text>
                   </View>
                 ) : null
               }
             />
+          ) : query.trim().length > 0 && !loading && tmdbSearchResults.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
+            </View>
           ) : (
             <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
+              {/* Featured Hero Banner at Top of Home Feed */}
+              {heroMedia && (
+                <View style={styles.heroContainer}>
+                  <Image source={{ uri: heroMedia.backdropUrl }} style={styles.heroImage} />
+                  <LinearGradient
+                    colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
+                    style={styles.heroGradient}
+                  />
+                  <View style={styles.heroContent}>
+                    <Text style={styles.heroTag}>FEATURED #1 TRENDING</Text>
+                    <Text style={styles.heroTitle}>{heroMedia.title.toUpperCase()}</Text>
+                    <Text style={styles.heroSub}>
+                      ★ {heroMedia.rating.toFixed(1)} ({heroMedia.voteCountFormatted} REVIEWS) • {heroMedia.releaseDate}
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.heroPlayButton, { backgroundColor: accentColor }]}
+                      onPress={() => handleWatchStream(heroMedia)}
+                    >
+                      <Text style={styles.heroPlayText}>▶ WATCH STREAM</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
               {feedsLoading && (
                 <ActivityIndicator size="small" color={accentColor} style={styles.feedSpinner} />
               )}
@@ -606,20 +857,29 @@ export default function HomeScreen() {
                       return renderFeedCard(item, type, 'all');
                     })
                   ) : (
-                    <Text style={styles.laneEmptyText}>
-                      NO HISTORY YET. WATCH OR SEARCH ITEMS TO POPULATE.
-                    </Text>
+                    <Text style={styles.laneEmptyText}>NO HISTORY YET. WATCH OR SEARCH ITEMS TO POPULATE.</Text>
                   )}
                 </ScrollView>
               </View>
 
               <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>TRENDING HOLLYWOOD</Text>
+                <Text style={styles.laneTitle}>TRENDING HOLLYWOOD MOVIES</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
                   {tmdbKey ? (
                     trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))
                   ) : (
                     <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
+                  )}
+                </ScrollView>
+              </View>
+
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>TRENDING WEB SERIES & TV SHOWS</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {tmdbKey ? (
+                    trendingTV.map(item => renderFeedCard(item, 'tv', 'hollywood'))
+                  ) : (
+                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD TV LANES.</Text>
                   )}
                 </ScrollView>
               </View>
@@ -646,25 +906,85 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* TAB 2: EXPLORE (GENRES & FILTERS) */}
+      {/* TAB 2: EXPLORE (FULL-CONTROL FILTERS) */}
       {currentTab === 'explore' && (
         <View style={styles.tabContent}>
-          <Text style={styles.sectionHeaderTitle}>DISCOVER & EXPLORE</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genrePillScroll}>
+          <Text style={styles.sectionHeaderTitle}>EXPLORE & FILTER ENGINE</Text>
+
+          {/* Media Type Toggle: Movies vs TV Shows */}
+          <View style={styles.exploreTypeRow}>
+            <TouchableOpacity
+              style={[styles.typeToggle, exploreType === 'movie' && { backgroundColor: accentColor, borderColor: accentColor }]}
+              onPress={() => setExploreType('movie')}
+            >
+              <Text style={[styles.typeToggleText, exploreType === 'movie' ? { color: '#0A0A0C' } : { color: '#FFFFFF' }]}>MOVIES</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.typeToggle, exploreType === 'tv' && { backgroundColor: accentColor, borderColor: accentColor }]}
+              onPress={() => setExploreType('tv')}
+            >
+              <Text style={[styles.typeToggleText, exploreType === 'tv' ? { color: '#0A0A0C' } : { color: '#FFFFFF' }]}>TV SHOWS</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Genre Filters Horizontal Scroll */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
             {Object.keys(TMDB_GENRES).map((genreName) => (
               <TouchableOpacity
                 key={genreName}
                 style={[
-                  styles.genrePill,
+                  styles.filterPill,
                   selectedGenre === genreName && { backgroundColor: accentColor, borderColor: accentColor }
                 ]}
                 onPress={() => setSelectedGenre(genreName)}
               >
                 <Text style={[
-                  styles.genrePillText,
+                  styles.filterPillText,
                   selectedGenre === genreName ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
                 ]}>
                   {genreName.toUpperCase()}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Granular Year Selector (Complete Freedom) */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            {YEAR_OPTIONS.map((yr) => (
+              <TouchableOpacity
+                key={yr}
+                style={[
+                  styles.filterPill,
+                  selectedYear === yr && { backgroundColor: '#FFE500', borderColor: '#FFE500' }
+                ]}
+                onPress={() => setSelectedYear(yr)}
+              >
+                <Text style={[
+                  styles.filterPillText,
+                  selectedYear === yr ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
+                ]}>
+                  {yr}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Granular Rating Selector */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            {RATING_OPTIONS.map((rat) => (
+              <TouchableOpacity
+                key={rat.label}
+                style={[
+                  styles.filterPill,
+                  selectedRating === rat.value && { backgroundColor: '#00FF88', borderColor: '#00FF88' }
+                ]}
+                onPress={() => setSelectedRating(rat.value)}
+              >
+                <Text style={[
+                  styles.filterPillText,
+                  selectedRating === rat.value ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
+                ]}>
+                  ★ {rat.label}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -679,10 +999,10 @@ export default function HomeScreen() {
               numColumns={3}
               contentContainerStyle={styles.exploreGrid}
               columnWrapperStyle={styles.exploreGridRow}
-              renderItem={({ item }) => renderFeedCard(item, 'movie', 'all')}
+              renderItem={({ item }) => renderFeedCard(item, exploreType, 'all')}
               ListEmptyComponent={
                 <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyText}>NO TITLES FOUND IN THIS GENRE</Text>
+                  <Text style={styles.emptyText}>NO TITLES MATCH THIS FILTER</Text>
                 </View>
               }
             />
@@ -698,17 +1018,10 @@ export default function HomeScreen() {
             <View style={styles.watchlistGrid}>
               {watchlist.map(item => (
                 <View key={`${item.mediaType}-${item.id}`} style={styles.watchlistItem}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      handleSearchSubmitWithIMDb(item.title, item.mediaType, item.id);
-                    }}
-                  >
+                  <TouchableOpacity onPress={() => handleSearchSubmitWithIMDb(item.title, item.mediaType, item.id)}>
                     <Image source={{ uri: item.posterUrl }} style={styles.watchlistPoster} />
                   </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.watchlistRemove} 
-                    onPress={() => toggleWatchlist(item)}
-                  >
+                  <TouchableOpacity style={styles.watchlistRemove} onPress={() => toggleWatchlist(item)}>
                     <Text style={styles.watchlistRemoveText}>REMOVE</Text>
                   </TouchableOpacity>
                   <Text style={styles.watchlistTitle} numberOfLines={1}>
@@ -778,35 +1091,6 @@ export default function HomeScreen() {
             />
           </View>
 
-          {proxyEnabled && (
-            <View style={styles.proxyFields}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>CUSTOM API PROXY URL</Text>
-                <TextInput
-                  style={styles.settingsInput}
-                  value={customApi}
-                  onChangeText={val => updateSetting('@movieshound_tmdb_proxy_api', val)}
-                  placeholder="https://tmdb-api.wmdb.tv"
-                  placeholderTextColor="rgba(255,255,255,0.2)"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>CUSTOM IMAGE PROXY URL</Text>
-                <TextInput
-                  style={styles.settingsInput}
-                  value={customImage}
-                  onChangeText={val => updateSetting('@movieshound_tmdb_proxy_image', val)}
-                  placeholder="https://images.tmdb.one/t/p"
-                  placeholderTextColor="rgba(255,255,255,0.2)"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-            </View>
-          )}
-
           <View style={styles.divider} />
 
           <Text style={styles.sectionTitle}>DIAGNOSTICS & SCRAPERS HEALTH</Text>
@@ -827,10 +1111,7 @@ export default function HomeScreen() {
                   {pingStatus[key]?.status === 'error' && (
                     <Text style={styles.pingError}>DEAD</Text>
                   )}
-                  <TouchableOpacity 
-                    style={styles.pingButton} 
-                    onPress={() => runPingCheck(key, domain)}
-                  >
+                  <TouchableOpacity style={styles.pingButton} onPress={() => runPingCheck(key, domain)}>
                     <Text style={styles.pingButtonText}>PING</Text>
                   </TouchableOpacity>
                 </View>
@@ -909,103 +1190,74 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Media Details Sheet Modal (Matching Mockup with expo-linear-gradient) */}
-      <Modal
-        visible={sheetVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setSheetVisible(false)}
-      >
-        <TouchableOpacity 
-          style={styles.modalBackdrop} 
-          activeOpacity={1} 
-          onPress={() => setSheetVisible(false)}
-        >
-          <View style={styles.modalContainer}>
-            <TouchableOpacity activeOpacity={1} style={styles.sheetContent}>
-              <View style={styles.sheetHeader}>
-                <View style={styles.dragHandle} />
-                <TouchableOpacity onPress={() => setSheetVisible(false)} style={styles.closeSheetButton}>
-                  <Text style={styles.closeSheetText}>×</Text>
-                </TouchableOpacity>
-              </View>
-
-              {selectedMedia && (
-                <ScrollView contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator={false}>
-                  {selectedMedia.backdropUrl && (
-                    <View style={styles.backdropContainer}>
-                      <Image source={{ uri: selectedMedia.backdropUrl }} style={styles.sheetBackdrop} resizeMode="cover" />
-                      <LinearGradient
-                        colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
-                        style={styles.backdropGradient}
-                      />
-                    </View>
-                  )}
-                  
-                  <Text style={styles.sheetTitle}>{selectedMedia.title.toUpperCase()}</Text>
-                  
-                  <View style={styles.sheetMetaRow}>
-                    <Text style={[styles.sheetMetaText, { color: accentColor }]}>
-                      {selectedMedia.rating ? `${selectedMedia.rating.toFixed(1)} ★` : 'N/A'}
-                    </Text>
-                    <Text style={styles.sheetMetaText}>•</Text>
-                    <Text style={styles.sheetMetaText}>{selectedMedia.releaseDate}</Text>
-                    <Text style={styles.sheetMetaText}>•</Text>
-                    <Text style={styles.sheetMetaText}>{selectedMedia.mediaType.toUpperCase()}</Text>
-                  </View>
-
-                  <Text style={styles.sheetOverview}>
-                    {selectedMedia.overview || 'NO DESCRIPTION AVAILABLE.'}
-                  </Text>
-
-                  {/* Primary Action: WATCH STREAM */}
-                  <TouchableOpacity
-                    style={[styles.sheetStreamButton, { backgroundColor: accentColor }]}
-                    onPress={() => {
-                      setSheetVisible(false);
-                      handleWatchStream(selectedMedia);
-                    }}
-                    disabled={resolvingStream}
-                  >
-                    {resolvingStream ? (
-                      <ActivityIndicator size="small" color="#0A0A0C" />
-                    ) : (
-                      <Text style={styles.sheetStreamButtonText}>▶ WATCH STREAM</Text>
-                    )}
-                  </TouchableOpacity>
-
-                  {/* Secondary Action: DOWNLOAD OPTIONS */}
-                  <TouchableOpacity
-                    style={styles.sheetDownloadButton}
-                    onPress={() => {
-                      setSheetVisible(false);
-                      handleSearchSubmitWithIMDb(
-                        selectedMedia.title, 
-                        selectedMedia.mediaType, 
-                        selectedMedia.id,
-                        selectedMedia.suggestedCategory || 'all'
-                      );
-                    }}
-                  >
-                    <Text style={styles.sheetDownloadButtonText}>↓ DOWNLOAD OPTIONS</Text>
-                  </TouchableOpacity>
-                </ScrollView>
-              )}
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Native Video Player Modal */}
+      {/* YouTube-Style Player Modal Component */}
       <VideoPlayerModal
         visible={playerVisible}
         videoUrl={activeStreamUrl}
         title={activeStreamTitle}
+        mediaItem={activeMediaItem}
         onClose={() => {
           setPlayerVisible(false);
           setActiveStreamUrl(null);
         }}
+        onDownloadPress={() => {
+          if (activeMediaItem) {
+            setPlayerVisible(false);
+            handleSearchSubmitWithIMDb(activeMediaItem.title, activeMediaItem.mediaType, activeMediaItem.id);
+          }
+        }}
+        onSelectArtist={(id, name) => handleOpenArtist(id, name)}
+        onSelectSimilarMedia={(item) => handleWatchStream(item)}
+        isWatched={activeMediaItem ? watchedList.some(i => i.id === activeMediaItem.id && i.type === activeMediaItem.mediaType) : false}
+        onToggleWatched={() => activeMediaItem && toggleWatched(activeMediaItem.id, activeMediaItem.mediaType || 'movie')}
+        isSavedWatchlist={activeMediaItem ? watchlist.some(i => i.id === activeMediaItem.id && i.mediaType === activeMediaItem.mediaType) : false}
+        onToggleWatchlist={() => activeMediaItem && toggleWatchlist({ id: activeMediaItem.id, title: activeMediaItem.title, posterUrl: activeMediaItem.posterUrl, mediaType: activeMediaItem.mediaType || 'movie' })}
       />
+
+      {/* Artist Portfolio Sheet Modal */}
+      <Modal
+        visible={artistModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setArtistModalVisible(false)}
+      >
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setArtistModalVisible(false)}>
+          <View style={styles.modalContainer}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetHeaderTitle}>{artistName.toUpperCase()} • FILMOGRAPHY</Text>
+              <TouchableOpacity onPress={() => setArtistModalVisible(false)} style={styles.closeSheetButton}>
+                <Text style={styles.closeSheetText}>×</Text>
+              </TouchableOpacity>
+            </View>
+
+            {loadingArtist ? (
+              <ActivityIndicator size="small" color={accentColor} style={{ marginVertical: 30 }} />
+            ) : (
+              <FlatList
+                data={artistCredits}
+                keyExtractor={(item) => `artist-${item.id}`}
+                numColumns={3}
+                contentContainerStyle={{ padding: 16 }}
+                columnWrapperStyle={{ justifyContent: 'space-between', marginBottom: 12 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={{ width: '31%' }}
+                    onPress={() => {
+                      setArtistModalVisible(false);
+                      handleWatchStream(item);
+                    }}
+                  >
+                    <Image source={{ uri: item.posterUrl }} style={{ width: '100%', aspectRatio: 2/3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }} />
+                    <Text style={{ fontFamily: 'NType82Mono', fontSize: 9, color: '#FFFFFF', marginTop: 4 }} numberOfLines={1}>
+                      {item.title.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Invisible scraper WebViews */}
       <View style={styles.hiddenContainer}>
@@ -1015,6 +1267,9 @@ export default function HomeScreen() {
             source={{ uri: task.searchUrl }}
             javaScriptEnabled={true}
             domStorageEnabled={true}
+            onShouldStartLoadWithRequest={(request) => {
+              return request.url.startsWith('http://') || request.url.startsWith('https://');
+            }}
             onMessage={(event) => handleWebViewMessage(task.siteKey, event.nativeEvent.data)}
             injectedJavaScript={`
               const checkLoaded = setInterval(() => {
@@ -1082,7 +1337,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 0,
     backgroundColor: 'rgba(255,255,255,0.02)',
     alignItems: 'center'
   },
@@ -1119,6 +1373,74 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontFamily: 'Ndot57',
     fontSize: 14,
+  },
+  suggestionsContainer: {
+    marginHorizontal: 20,
+    backgroundColor: '#16161A',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    position: 'absolute',
+    top: 66,
+    left: 0,
+    right: 0,
+    zIndex: 999,
+  },
+  suggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  suggestionTitleBtn: {
+    flex: 1,
+    marginRight: 12,
+  },
+  suggestionText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 11,
+    color: '#FFFFFF',
+  },
+  suggestionDownloadBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  suggestionDownloadIcon: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  recentSearchesContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    marginTop: 10,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  recentSearchesLabel: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.3)',
+    letterSpacing: 1,
+    marginRight: 4,
+  },
+  recentSearchPill: {
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  recentSearchPillText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.6)',
   },
   categoryRow: {
     flexDirection: 'row',
@@ -1157,6 +1479,59 @@ const styles = StyleSheet.create({
   },
   scrollFeedsContent: {
     paddingBottom: 30,
+  },
+  heroContainer: {
+    position: 'relative',
+    width: '100%',
+    height: 220,
+    marginBottom: 20,
+  },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  heroGradient: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 140,
+  },
+  heroContent: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    bottom: 12,
+  },
+  heroTag: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: '#FF2D55',
+    letterSpacing: 1.5,
+  },
+  heroTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 18,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+    marginVertical: 4,
+  },
+  heroSub: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.6)',
+    marginBottom: 10,
+  },
+  heroPlayButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignSelf: 'flex-start',
+  },
+  heroPlayText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#0A0A0C',
+    letterSpacing: 1,
   },
   feedSpinner: {
     marginTop: 20,
@@ -1214,6 +1589,23 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.15)',
     zIndex: 10
   },
+  watchedBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: '#00FF88',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  watchedCheck: {
+    fontSize: 11,
+    color: '#0A0A0C',
+    fontWeight: 'bold',
+  },
   feedCardDownload: {
     position: 'absolute',
     bottom: 4,
@@ -1258,25 +1650,45 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
     marginHorizontal: 20,
     marginTop: 16,
-    marginBottom: 12,
+    marginBottom: 8,
   },
-  genrePillScroll: {
+  exploreTypeRow: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginBottom: 12,
+    gap: 8,
+  },
+  typeToggle: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  typeToggleText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  filterScroll: {
     paddingHorizontal: 20,
     gap: 8,
-    marginBottom: 16,
+    marginBottom: 10,
   },
-  genrePill: {
+  filterPill: {
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 0,
+    marginHorizontal: 4,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
   },
-  genrePillText: {
-    fontFamily: 'Ndot57',
+  filterPillText: {
+    fontFamily: 'LetteraMono',
     fontSize: 10,
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   exploreGrid: {
     paddingHorizontal: 20,
@@ -1329,7 +1741,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 45, 85, 0.95)',
     paddingHorizontal: 6,
     paddingVertical: 3,
-    borderRadius: 0,
   },
   watchlistRemoveText: {
     fontFamily: 'NType82Mono',
@@ -1366,7 +1777,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingVertical: 8,
     paddingHorizontal: 16,
-    borderRadius: 0,
     minWidth: 70,
     alignItems: 'center',
   },
@@ -1414,12 +1824,6 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.4)',
     marginTop: 2,
     letterSpacing: 0.5,
-  },
-  proxyFields: {
-    paddingLeft: 12,
-    borderLeftWidth: 1,
-    borderLeftColor: 'rgba(255,255,255,0.08)',
-    marginBottom: 10,
   },
   diagnosticsContainer: {
     gap: 12,
@@ -1473,7 +1877,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 0,
   },
   pingButtonText: {
     fontFamily: 'NType82Mono',
@@ -1531,111 +1934,28 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.15)',
     overflow: 'hidden',
   },
-  sheetContent: {
-    width: '100%',
-    paddingBottom: 24,
-  },
   sheetHeader: {
     height: 48,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
     borderBottomWidth: 0.5,
     borderBottomColor: 'rgba(255, 255, 255, 0.05)',
   },
-  dragHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  closeSheetButton: {
-    position: 'absolute',
-    right: 16,
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeSheetText: {
-    fontSize: 28,
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontFamily: 'LetteraMono',
-  },
-  sheetScroll: {
-    padding: 20,
-  },
-  backdropContainer: {
-    width: '100%',
-    height: 190,
-    marginBottom: 16,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  sheetBackdrop: {
-    width: '100%',
-    height: '100%',
-  },
-  backdropGradient: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 90,
-  },
-  sheetTitle: {
-    fontFamily: 'Ndot57',
-    fontSize: 20,
-    color: '#FFFFFF',
-    letterSpacing: 1,
-    lineHeight: 26,
-  },
-  sheetMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginVertical: 10,
-  },
-  sheetMetaText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
-    letterSpacing: 0.5,
-  },
-  sheetOverview: {
-    fontFamily: 'LetteraMono',
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    lineHeight: 18,
-    letterSpacing: 0.5,
-    marginBottom: 20,
-  },
-  sheetStreamButton: {
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 0,
-    marginBottom: 12,
-  },
-  sheetStreamButtonText: {
-    fontFamily: 'Ndot57',
-    fontSize: 13,
-    color: '#0A0A0C',
-    letterSpacing: 1.5,
-  },
-  sheetDownloadButton: {
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FFE500',
-    backgroundColor: 'rgba(255, 229, 0, 0.05)',
-  },
-  sheetDownloadButtonText: {
+  sheetHeaderTitle: {
     fontFamily: 'Ndot57',
     fontSize: 11,
-    color: '#FFE500',
-    letterSpacing: 1.5,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  closeSheetButton: {
+    paddingHorizontal: 8,
+  },
+  closeSheetText: {
+    fontSize: 24,
+    color: '#FF2D55',
+    fontFamily: 'Ndot57',
   },
   hiddenContainer: {
     width: 0,

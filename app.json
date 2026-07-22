@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "MoviesHound",
-    "slug": "movies-hound",
+    "name": "HoloGram",
+    "slug": "hologram",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,12 +10,11 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.movieshound.app",
+      "package": "com.hologram.app",
+      "jsEngine": "hermes",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#0A0A0C",
+        "foregroundImage": "./assets/icon.png"
       },
       "predictiveBackGestureEnabled": false
     },
