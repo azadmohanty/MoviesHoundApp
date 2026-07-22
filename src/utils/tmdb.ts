@@ -302,3 +302,14 @@ export const searchTMDB = async (query: string): Promise<TMDBMediaItem[]> => {
     return [];
   }
 };
+
+export const getImdbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<string | null> => {
+  try {
+    const data = await fetchFromTMDB(`/${mediaType}/${id}/external_ids`);
+    return data.imdb_id || null;
+  } catch (e) {
+    console.warn(`Failed fetching external IDs for ${mediaType} ${id}:`, e);
+    return null;
+  }
+};
+

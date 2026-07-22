@@ -16,7 +16,7 @@ import { WebView } from 'react-native-webview';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getMediaCredits, getSimilarMedia, getTVShowDetails, CastMember, TMDBMediaItem, TVShowDetails } from '../utils/tmdb';
-import { getStreamServerUrl } from '../utils/streamResolver';
+import { getStreamServerUrl, resolveStreamUrl } from '../utils/streamResolver';
 
 const { width } = Dimensions.get('window');
 
@@ -54,6 +54,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [selectedServer, setSelectedServer] = useState(1);
   const [vidsrcBase, setVidsrcBase] = useState('https://vidsrc.sbs');
   const [activeUrl, setActiveUrl] = useState<string | null>(videoUrl);
+  const [loadingStream, setLoadingStream] = useState(false);
   const [castList, setCastList] = useState<CastMember[]>([]);
   const [similarList, setSimilarList] = useState<TMDBMediaItem[]>([]);
   const [tvDetails, setTvDetails] = useState<TVShowDetails | null>(null);
@@ -70,12 +71,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   });
 
   useEffect(() => {
-    setActiveUrl(videoUrl);
     setSelectedServer(1);
     setCurrentSeason(1);
     setCurrentEpisode(1);
     setShowTroubleshoot(false);
-  }, [videoUrl]);
+    if (visible && mediaItem) {
+      updatePlayerUrl(1, 1, 1);
+    } else {
+      setActiveUrl(videoUrl);
+    }
+  }, [videoUrl, visible]);
 
   useEffect(() => {
     if (visible && mediaItem) {
@@ -114,13 +119,33 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     }
   };
 
-  const updatePlayerUrl = (serverIdx: number, season: number, episode: number) => {
+  const updatePlayerUrl = async (serverIdx: number, season: number, episode: number) => {
     setSelectedServer(serverIdx);
     setCurrentSeason(season);
     setCurrentEpisode(episode);
     if (mediaItem) {
-      const newUrl = getStreamServerUrl(serverIdx, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
-      setActiveUrl(newUrl);
+      if (serverIdx === 1 || serverIdx === 2) {
+        setLoadingStream(true);
+        const res = await resolveStreamUrl(
+          mediaItem.id,
+          mediaItem.mediaType || 'movie',
+          mediaItem.title || title || '',
+          season,
+          episode,
+          serverIdx
+        );
+        if (res && res.streamUrl) {
+          setActiveUrl(res.streamUrl);
+        } else {
+          // Fallback to SuperEmbed if direct stream is unavailable
+          const fallbackUrl = getStreamServerUrl(3, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
+          setActiveUrl(fallbackUrl);
+        }
+        setLoadingStream(false);
+      } else {
+        const newUrl = getStreamServerUrl(serverIdx, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
+        setActiveUrl(newUrl);
+      }
     }
   };
 
@@ -277,10 +302,10 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
                   {[1, 2, 3, 4, 5].map((idx) => {
                     let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (SUPER VIP)';
-                    if (idx === 2) label = 'SERVER 2 (SUPER SIMPLE)';
-                    if (idx === 3) label = 'SERVER 3 (VIDSRC 2.RU)';
-                    if (idx === 4) label = 'SERVER 4 (VIDSRC TO)';
+                    if (idx === 1) label = 'SERVER 1 (MOVIEBOX FAST MP4)';
+                    if (idx === 2) label = 'SERVER 2 (TORRENTIO HLS)';
+                    if (idx === 3) label = 'SERVER 3 (SUPER VIP)';
+                    if (idx === 4) label = 'SERVER 4 (VIDSRC 2.RU)';
                     if (idx === 5) label = 'SERVER 5 (ANYEMBED)';
                     return (
                       <TouchableOpacity

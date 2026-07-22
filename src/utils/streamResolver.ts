@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resolveMovieBoxStream } from './movieboxResolver';
+import { resolveTorrentioStream } from './torrentioResolver';
 
 export type StreamResult = {
   streamUrl: string;
@@ -23,31 +25,27 @@ export const getStreamServerUrl = (
   const cleanAny = anyembedBase.replace(/\/$/, '');
   
   if (serverIndex === 1) {
-    // SuperEmbed VIP Player (Directstream)
+    // MovieBox (Server 1 Direct MP4 - Dynamic resolution)
+    return `moviebox://${tmdbId}`;
+  }
+  if (serverIndex === 2) {
+    // Torrentio (Server 2 HLS Stream - Dynamic resolution)
+    return `torrentio://${tmdbId}`;
+  }
+  if (serverIndex === 3) {
+    // SuperEmbed VIP Player
     return mediaType === 'tv'
       ? `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
       : `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1`;
   }
-  if (serverIndex === 2) {
-    // SuperEmbed Simple Player
-    return mediaType === 'tv'
-      ? `${cleanSuper}/?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
-      : `${cleanSuper}/?video_id=${tmdbId}&tmdb=1`;
-  }
-  if (serverIndex === 3) {
+  if (serverIndex === 4) {
     // VidSrc 2.RU / Dynamic Resolved Domain
     return mediaType === 'tv'
       ? `${cleanBase}/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
       : `${cleanBase}/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
   }
-  if (serverIndex === 4) {
-    // VidSrc TO
-    return mediaType === 'tv'
-      ? `${cleanTo}/embed/tv/${tmdbId}/${season}/${episode}`
-      : `${cleanTo}/embed/movie/${tmdbId}`;
-  }
   if (serverIndex === 5) {
-    // AnyEmbed (formerly SmashyStream)
+    // AnyEmbed
     return mediaType === 'tv'
       ? `${cleanAny}/embed/tmdb-tv-${tmdbId}-${season}-${episode}`
       : `${cleanAny}/embed/tmdb-movie-${tmdbId}`;
@@ -58,11 +56,37 @@ export const getStreamServerUrl = (
 export const resolveStreamUrl = async (
   tmdbId: number,
   mediaType: 'movie' | 'tv' | 'anime',
+  title: string = '',
   season: number = 1,
   episode: number = 1,
   serverIndex: number = 1
 ): Promise<StreamResult | null> => {
   try {
+    // Server 1: MovieBox Direct MP4
+    if (serverIndex === 1 && title) {
+      const mbStream = await resolveMovieBoxStream(title, mediaType === 'tv' ? 'tv' : 'movie', season, episode);
+      if (mbStream) {
+        return {
+          streamUrl: mbStream.url,
+          sourceName: mbStream.qualityLabel || 'Server 1 (MovieBox MP4)',
+          isDirectStream: true
+        };
+      }
+    }
+
+    // Server 2: Torrentio HLS Stream
+    if (serverIndex === 2) {
+      const torStream = await resolveTorrentioStream(tmdbId, mediaType === 'tv' ? 'tv' : 'movie', season, episode);
+      if (torStream) {
+        return {
+          streamUrl: torStream.url,
+          sourceName: torStream.qualityLabel || 'Server 2 (Torrentio HLS)',
+          isDirectStream: true
+        };
+      }
+    }
+
+    // Embed Fallbacks (Servers 3, 4, 5)
     const domainsRaw = await AsyncStorage.getItem('@movieshound_domains_cache');
     let vidsrcBase = 'https://vidsrc2.ru';
     let superembedBase = 'https://multiembed.mov';
