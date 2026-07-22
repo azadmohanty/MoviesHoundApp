@@ -21,11 +21,12 @@ function extractDomainFromHtml(html) {
 
 async function resolveVidSrc() {
   const mirrors = [
-    'https://vidsrc.sbs',
-    'https://vidsrc.cc',
-    'https://vidsrc.net',
-    'https://vidsrc.pro',
-    'https://v2.vidsrc.me'
+    'https://vidsrc2.ru',
+    'https://vidsrc.to',
+    'https://vidsrcme.ru',
+    'https://vsrc.su',
+    'https://vidsrcme.su',
+    'https://vidsrc-embed.ru'
   ];
   for (const url of mirrors) {
     try {
@@ -83,7 +84,7 @@ async function main() {
   if (vidsrcResolved) {
     domains['vidsrc'] = vidsrcResolved;
   } else if (!domains['vidsrc']) {
-    domains['vidsrc'] = 'https://vidsrc.sbs';
+    domains['vidsrc'] = 'https://vidsrc2.ru';
   }
 
   fs.writeFileSync('domains.json', JSON.stringify(domains, null, 2));

@@ -6,7 +6,7 @@
     "production": {
       "android": {
         "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease"
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
       }
     }
   },

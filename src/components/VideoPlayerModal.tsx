@@ -275,12 +275,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
                   {[1, 2, 3, 4, 5, 6].map((idx) => {
                     let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (SBS)';
+                    if (idx === 1) label = 'SERVER 1 (2.RU)';
                     if (idx === 2) label = 'SERVER 2 (TO)';
-                    if (idx === 3) label = 'SERVER 3 (ME)';
+                    if (idx === 3) label = 'SERVER 3 (XYZ)';
                     if (idx === 4) label = 'SERVER 4 (SUPER)';
                     if (idx === 5) label = 'SERVER 5 (SMASHY)';
-                    if (idx === 6) label = 'SERVER 6 (LOKLOK)';
+                    if (idx === 6) label = 'SERVER 6 (VSRC)';
                     return (
                       <TouchableOpacity
                         key={`server-${idx}`}

@@ -1,326 +1,383 @@
-
-# Comprehensive Source Analysis for a MovieBox-Like App
-
-## 1. HOW EACH SOURCE TYPE WORKS
-
-There are fundamentally **4 architectural approaches** to getting video content. Understanding these is key to building your app.
+Here's a clean, organized report of all working providers with their details and code snippets:
 
 ---
 
-### Approach A: Embed/Iframe Providers (Easiest — Streaming Only)
+# TIER 2: EMBED/STREAMING PROVIDERS
 
-These are embed pages that take a TMDB or IMDB ID and return an HTML page with an embedded video player. You can either:
+## 1. SuperEmbed VIP (Ranked #1)
 
-- **Load the iframe in a WebView** (trivial, but ads-heavy and less control)
-- **Headlessly scrape the page** to extract the direct `.m3u8` (HLS) or `.mp4` URL
+| Detail | Value |
+|---|---|
+| URL | `https://multiembed.mov/directstream.php` |
+| Params | `video_id={TMDB_ID}&tmdb=1` |
+| Extra subs | `&sub_url={URL_ENCODED_VTT_URL}` |
+| Stream type | HLS multi-quality (360p–1080p) |
+| Ads | 1 popup |
+| Audio | Multi-audio on VIP version |
+| Subtitles | Built-in + custom via `&sub_url` |
+| API key | Not needed |
 
-**How VidSrc works (the canonical example):**
-
+**Usage:**
 ```
-Request:  GET https://vidsrc.to/embed/movie/{tmdb_id}
-          OR https://vidsrc.to/embed/tv/{tmdb_id}/{season}/{episode}
-
-Response: HTML page containing:
-          1. A video player (usually using HLS.js or native <video>)
-          2. Multiple source qualities embedded in JavaScript
-          3. Subtitle tracks (VTT files)
-
-To extract the direct .m3u8:
-  - The embed page loads a JS bundle that constructs the stream URL
-  - You need either a headless browser (Playwright/Puppeteer) or
-    reverse-engineer the API call the JS makes
+https://multiembed.mov/directstream.php?video_id=19995&tmdb=1
 ```
 
-There are **pre-built scrapers** for this:
+---
 
-| Project | Language | What it does |
+## 2. VidSrc (Ranked #2 — Best Uptime)
+
+### Active Domains (July 2026)
+
+| Domain | Status |
+|---|---|
+| `vidsrc2.ru` | ✅ Active |
+| `vidsrcme.ru` | ✅ Active |
+| `vidsrcme.su` | ✅ Active |
+| `vidsrc-me.ru` | ✅ Active |
+| `vidsrc-me.su` | ✅ Active |
+| `vidsrc-embed.ru` | ✅ Active |
+| `vidsrc-embed.su` | ✅ Active |
+| `vsrc.su` | ✅ Active |
+| `vidsrc.to` | ✅ Active |
+| `vidsrc.dev` | ✅ Active |
+| `vidsrc.ru` | ✅ Active |
+| `vidsrc.fyi` | ✅ Active |
+
+### URL Format
+
+```
+https://{domain}/embed/movie/{TMDB_ID}
+https://{domain}/embed/tv/{TMDB_ID}/{SEASON}/{EPISODE}
+```
+
+**Example:**
+```
+https://vidsrc2.ru/embed/movie/19995
+https://vidsrc.to/embed/tv/1399/1/1
+```
+
+### Custom Subtitle Parameters
+
+| Parameter | Format | Example |
 |---|---|---|
-| `DivineChile/vidsrc-scraper` | Node.js + Playwright | Extracts `.m3u8` URLs and subtitles from multiple VidSrc domains |
-| `cool-dev-guy/vidsrc-api` | Python | Extracts streams from vidsrc.to, vidsrc.me (4 sources at once) |
-| `lestwastaken/lestresolver` | Go | Resolves HLS URLs from IMDB IDs via vidsrc.me/vidsrc.net |
-| `@movie-web/providers` | TypeScript/JS | The gold standard — scrapes 10+ providers in one npm package |
+| `&sub_file` | URL-encoded VTT/SRT URL | `&sub_file=https%3A%2F%2Fexample.com%2Fsubs.vtt` |
+| `&sub.info` | JSON array | `&sub.info=[{"lang":"English","url":"https://..."}]` |
+
+### API Documentation
+
+| Resource | URL |
+|---|---|
+| VidSrc API Docs | `https://vidsrc.dev/docs` |
+| VidSrc API Docs | `https://vidsrc.ru/docs` |
 
 ---
 
-### Approach B: Direct Scrape Sites (Downloading + Streaming)
-
-These are websites that host direct download links. The pattern is:
-
-1. Scrape the search page for results
-2. Navigate to the movie detail page
-3. Extract download links (usually hosted on file hosts like GD, Clicknupload, etc.)
-
-**FzMovies scraping pattern (the most important one):**
+## 3. MultiEmbed (Fallback)
 
 ```
-Search:     GET https://fzmovies.net/search.php?keyword={query}
-            Returns HTML table of results
-
-Detail:     GET https://fzmovies.net/movie-{id}.htm
-            Returns page with download links in qualities (480p, 720p)
-
-Download:   Links point to direct .mp4 or .mkv files on CDN-like hosts
-
-Automation: Use the unofficial Python API:
-            from fzmovies_api import Auto
-            Auto(query="Avatar", quality="720p").run()
+https://multiembed.mov/directstream.php?video_id={TMDB_ID}&tmdb=1
 ```
 
-The `fzmovies-api` Python package (`Simatwa/fzmovies-api`) handles the entire flow — search, filter by category/quality, and download.
+Works identically to SuperEmbed VIP but less reliable uptime.
 
 ---
 
-### Approach C: Internal/Private APIs (Hardest)
+## 4. Embed Usage in React Native (WebView)
 
-MovieBox itself uses a private REST API with HMAC authentication:
+```tsx
+import { WebView } from 'react-native-webview';
 
+// SuperEmbed
+<WebView
+  source={{ uri: `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1` }}
+  allowsFullscreenVideo
+  mediaPlaybackRequiresUserAction={false}
+/>
+
+// VidSrc with fallback chain
+const domains = [
+  'vidsrc2.ru', 'vidsrcme.ru', 'vidsrcme.su',
+  'vsrc.su', 'vidsrc.to', 'vidsrc.dev',
+  'vidsrc.ru', 'vidsrc.fyi'
+];
+const firstWorking = await tryDomainsUntilOneWorks(domains, tmdbId);
+<WebView
+  source={{ uri: `https://${firstWorking}/embed/movie/${tmdbId}` }}
+  allowsFullscreenVideo
+/>
 ```
-Base:      api.inmoviebox.com
-Auth:      HMAC-MD5 signature with a shared secret key (MOVIEBOX_PRIMARY_KEY)
-Endpoint:  Various for search, details, stream URLs
-
-This was documented in the NuvioStreams Addon source code
-(provider source file: providers/moviebox.js)
-```
-
-This is the hardest to replicate because the keys are proprietary and may change. The `moviebox-api` Python package on PyPI attempted to wrap this, but it was unreliable.
 
 ---
 
-### Approach D: The @movie-web/providers Package (Recommended Starting Point)
+# TIER 3: CLOUDSTREAM-EXTRACTED SOURCES
 
-This is an **MIT-licensed npm package** that already implements scraping for dozens of providers. It's used by production apps (sudo-flix, VidBinge, etc.).
+## Active CloudStream Repositories
+
+| Repo Name | Plugin JSON URL | Language | License |
+|---|---|---|---|
+| **Megix (CSX)** | `https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json` | Kotlin | GPLv3 |
+| **Phisher** | `https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/refs/heads/builds/plugins.json` | Kotlin | GPLv3 |
+| **CNC Verse** | (private repo, MovieBox source) | Kotlin | GPLv3 |
+| **English Multi-lingual** | (community repo) | Kotlin | GPLv3 |
+| **Hexated** | (community repo) | Kotlin | GPLv3 |
+| **Storm** | (community repo) | Kotlin | GPLv3 |
+
+---
+
+## Source Breakdown
+
+### CineStream (via Megix/CSX repo)
+- **Architecture**: Multi-database (TMDB + custom)
+- **Subtitle support**: Best — multiple languages, VTT/SRT
+- **Multi-audio**: Yes
+- **Downloads**: Yes (both streaming + download links)
+- **How it works**: Kotlin scraper → HTTP requests → HTML parsing → link extraction
+
+### MovieBox (via CNC Verse repo)
+- **Architecture**: Private API wrapper (reverse-engineered)
+- **Subtitle support**: Good
+- **Multi-audio**: Yes
+- **Downloads**: Yes
+- **Caveat**: API keys change frequently, needs updates
+
+### VegaMovies
+- **Architecture**: Direct HTML scraping
+- **Output**: Direct `.mp4` / `.mkv` download URLs
+- **Pipeline**: 3 pages deep (search → movie → download page → actual file)
+- **Subtitle support**: Limited
+- **Multi-audio**: Sometimes
+- **Downloads**: Yes (primary purpose)
+
+---
+
+## CloudStream Pipeline Pattern (VegaMovies Example)
 
 ```
+Page 1 (Search Results)
+  └── Extract movie detail URL
+Page 2 (Movie Detail Page)
+  └── Extract download page URL
+Page 3 (Download Page)
+  └── Extract actual .mp4 / .mkv file URL
+```
+
+**Resolution strategy:** Chain HTTP requests with HTML parsing at each step.
+
+---
+
+# @movie-web/providers npm Package (v2.4.13)
+
+## Installation
+```bash
 npm install @movie-web/providers
 ```
 
-**Example usage:**
+## Polyfills for React Native
+```bash
+npm install @react-native-anywhere/polyfill-base64 react-native-quick-crypto
+```
+
+**⚠ Expo Go incompatible** (needs native compilation for `react-native-quick-crypto`)
+
+---
+
+## Full List of Source Providers
+
+| ID | Name | Type | Output |
+|---|---|---|---|
+| autoembed | AutoEmbed | Movies + TV | HLS streams |
+| bombtheirish | BombTheirish | Movies | HLS streams |
+| catflix | Catflix | Movies | HLS streams |
+| flixhq | FlixHQ | Movies + TV | HLS streams |
+| gomovies | GoMovies | Movies + TV | HLS streams |
+| goojara | Goojara | Movies + TV | Direct downloads |
+| hdrezka | HDRezka | Movies + TV | HLS streams (Russian + multi-lang) |
+| kissasian | KissAsian | Asian dramas | HLS streams |
+| lookmovie | LookMovie | Movies + TV | HLS streams |
+| m4ufree | M4UFree | Movies + TV | HLS streams |
+| nepu | Nepu | Movies + TV | HLS streams |
+| nsbx | NSBX | Movies + TV | HLS streams |
+| primewire | PrimeWire | Movies + TV | Embed links |
+| redstar | RedStar | Movies | HLS streams |
+| showbox | ShowBox | Movies + TV | HLS streams |
+| smashystream | SmashyStream | Movies + TV | HLS streams |
+| soapertv | SoaperTV | TV Shows | HLS streams |
+| vidsrc | VidSrc | Movies + TV | HLS streams |
+| vidsrcsu | VidSrcSU | Movies + TV | HLS streams |
+| vidsrcto | VidSrcTo | Movies + TV | HLS streams |
+| warezcdn | WarezCDN | Movies + TV | HLS streams |
+| whvx | WHVX | Movies + TV | HLS streams (multi-layer embeds) |
+| zoechip | ZoeChip | Movies + TV | HLS streams |
+| remote | RemoteStream | Movies + TV | HLS streams |
+
+---
+
+## Full List of Embed Resolvers (40+)
+
+These are the video hosting sites that source providers link to. The library handles the full redirect chain.
+
+| Embed Host | What it resolves |
+|---|---|
+| UpCloud | HLS |
+| VidCloud | HLS |
+| Mp4Upload | Direct file |
+| StreamTape | Direct file |
+| MixDrop | Direct file |
+| DoodStream | Direct file |
+| Voe | Direct file |
+| FebBox | HLS |
+| FileMoon | Direct file |
+| StreamSB | HLS |
+| StreamHub | HLS |
+| *+ 30 more* | |
+
+---
+
+## Code: Full Implementation
 
 ```typescript
-import { makeProviders, makeSimpleScraperFilter } from '@movie-web/providers';
+import { makeProviders, makeStandardFetcher, targets } from '@movie-web/providers';
 
 const providers = makeProviders({
-  fetcher: ... // your fetcher (works in browser or Node)
+  fetcher: makeStandardFetcher(fetch),
+  target: targets.NATIVE
 });
 
-const results = await providers.runAllScrapers({
-  media: {
-    type: 'movie',
-    tmdbId: '19995' // Avatar
-  },
-  filter: makeSimpleScraperFilter({ returnType: 'stream' })
-});
-```
-
----
-
-## 2. STREAMING vs DOWNLOADING — Complete Breakdown
-
-| Source | Streaming | Downloading | Method | Quality Range |
-|---|---|---|---|---|
-| **VidSrc** (`vidsrc.to`, `vidsrc.me`, etc.) | Yes | No* | Embed/HLS scrape | 360p-1080p |
-| **SuperEmbed** (`multiembed.mov`) | Yes | No* | Embed/HLS | 480p-1080p |
-| **FzMovies** (`fzmovies.net`) | Yes | **Yes** | Direct .mp4 links | 480p, 720p |
-| **Gomovies** | Yes | No | Embed | 720p-1080p |
-| **ShowBox** | Yes | No | Embed/API | 720p-1080p |
-| **FlixHQ** | Yes | No | Embed | 720p-1080p |
-| **SmashyStream** | Yes | No | Embed | 720p-1080p |
-| **MovieBox API** (`api.inmoviebox.com`) | Yes | **Yes** | HMAC API | Variable |
-| **HDHub4u** | Yes | **Yes** | Direct links | 480p-4K |
-| **VegaMovies** | Yes | **Yes** | Direct links | 480p-1080p |
-| **PagalWorld** | Yes | **Yes** | Direct links | 360p-1080p |
-| **MoviesMod** | Yes | **Yes** | Direct links | 480p-1080p |
-| **BollyFlix** | Yes | **Yes** | Direct links | 480p-1080p |
-| **KatWorld** | Yes | **Yes** | Direct links | 480p-4K |
-| **YTS** (.mx) | Yes | **Yes** | Torrent + direct | 720p-1080p |
-| **NetflixMirror** | Yes | No | Embed | 720p-1080p |
-
-*\* "No*" means the embed page doesn't offer a download button, but you can capture the `.m3u8` stream URL and save it locally using `ffmpeg`.*
-
----
-
-## 3. DIRECT SCRAPING TARGETS — Full List
-
-Here are sites commonly used by apps like MovieBox, grouped by their characteristics.
-
-### Tier 1: Proven, Reliable, Widely Used
-
-These appear in multiple open-source scraping projects (CloudStream, movie-web, etc.):
-
-| Site | URL Pattern | Type | Notes |
-|---|---|---|---|
-| **FzMovies** | `fzmovies.net` | Direct downloads | Python SDK available. .cms identifier in MovieBox |
-| **FzTvSeries** | `fztvseries.net` | Direct downloads | TV shows specific |
-| **HDHub4u** | `hdhub4u.med` | Direct downloads | Indian/Hollywood content |
-| **VegaMovies** | `vegamovie.ink` | Direct downloads | Multi-quality, multi-language |
-| **MoviesMod** | `moviesmod.rent` | Direct downloads | Hindi + dual audio |
-| **BollyFlix** | `bollyflix.bond` | Direct downloads | Bollywood focus |
-| **KatWorld** | `katworld.net` | Direct downloads | International |
-| **FilmyFly** | `filmyflyz.com` | Direct downloads | Bollywood/Hollywood |
-| **PagalWorld** | `pagalworldl.com` | Direct downloads | Hindi music + movies |
-| **MP4Moviez** | `mp4moviez.bond` | Direct downloads | Hindi/English |
-
-### Tier 2: Embed/Streaming Providers
-
-These are the main embed-layer services that VidSrc and similar aggregators use:
-
-| Service | URL Pattern | Type | How it works |
-|---|---|---|---|
-| **VidSrc** | `vidsrc.to/embed/movie/{tmdb}` | HLS stream | The big one. Multiple active domains: vidsrc2.ru, vidsrcme.ru, vsrc.su, etc. |
-| **SuperEmbed** | `multiembed.mov/?video_id={tmdb}&tmdb=1` | HLS stream | Also at `getsuperembed.link` |
-| **VidCloud** | `vidcloud.stream/{imdb}.html` | HLS stream | Old but works |
-| **Gomovies** | `gomo.to/movie/{imdb}` | HLS stream | Multi-server |
-| **CurtStream** | `curtstream.com/movies/imdb/{imdb}` | HLS stream | Simple embed |
-| **FSAPI** | `fsapi.xyz/movie/{imdb}` | HLS stream | Returns JSON with stream URLs |
-| **MovieWP** | `moviewp.com/se.php?video_id={tmdb}&tmdb=1` | HLS stream | Also supports TV |
-| **APIMDB** | `v2.apimdb.net/e/movie/{imdb}` | HLS stream | Returns embed with stream |
-| **DatabaseGDrive** | `databasegdriveplayer.co/player.php` | HLS stream | Google Drive sourced |
-
-### Tier 3: CloudStream-Extracted Sources
-
-From the Hexated, Phisher, and English provider repos (these are actively maintained):
-
-| Provider | What you get | Language/Region |
-|---|---|---|
-| **Sorastream** | Multi-quality HLS | Global |
-| **SuperStream** | HD streams | Global |
-| **SFlix** | Embed streams | Global |
-| **Cineby** | Embed streams | Global |
-| **LookMovie2** | Embed streams | Global |
-| **Putlocker** | Embed streams | Global |
-| **ShowFlix** | Direct + Embed | Indian |
-| **Dramacool** | Direct download | Asian/Korean |
-| **KissKH** | Embed streams | Asian |
-| **KissAsian** | Embed streams | Asian |
-| **Tamilian** | Direct download | Tamil |
-| **MassTamilan** | Direct download | Tamil |
-| **Telugumv** | Direct download | Telugu |
-| **MyFlixer** | Embed streams | Global |
-| **NOXX** | Embed streams | Global |
-| **YTS** (plugin) | Torrent links | Global |
-| **CineStream** | Direct download | Indian |
-| **World4uFree** | Direct download | Indian |
-| **FourKHDHub** | Direct download | 4K content |
-| **Streamblasters** | Embed streams | Global |
-| **HDrezka** | Embed streams | Russian/Global |
-| **LokLok** | Embed streams | Indonesian |
-
-### Tier 4: File Host / CDN Sources
-
-These are where the actual `.mp4`/`.mkv` files live. The scraping sites above usually link to these:
-
-```
-Google Drive (shared links)
-Clicknupload
-Indishare
-RapidGator
-Uploaded.net
-1Fichier
-Mega.nz
-Pcloud
-Ncloud
-```
-
----
-
-## 4. PRACTICAL IMPLEMENTATION BLUEPRINT
-
-For a **mini MovieBox app**, here's what I'd recommend as your architecture:
-
-### Phase 1: Streaming Only (Can build in a weekend)
-
-```
-TMDB API → Get movie metadata + IDs
-     ↓
-@movie-web/providers → Try all providers in order
-     ↓
-VidSrc fallback → Use a Node/Playwright scraper
-     ↓
-ExoPlayer / AVPlayer → Play the .m3u8 stream
-```
-
-### Phase 2: Add Downloads
-
-```
-Add FzMovies scraper → Extract direct .mp4 links
-Add HDHub4u/VegaMovies scrapers → More download sources
-Add Google Drive parsing → Handle GDrive-hosted content
-```
-
-### Phase 3: Production Scale
-
-```
-Backend proxy (to avoid CORS + IP bans):
-  - Cloudflare Worker or Node/Express server
-  - Caches scraped results
-  - Rotates user-agents and IPs
-```
-
-### Concrete Code Example: VidSrc Scraper in Python
-
-```python
-import requests
-import re
-import json
-
-def get_vidsrc_stream(tmdb_id, media_type="movie", season=1, episode=1):
-    """Extract stream URL from VidSrc"""
-    if media_type == "movie":
-        url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
-    else:
-        url = f"https://vidsrc.to/embed/tv/{tmdb_id}/{season}/{episode}"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://vidsrc.to/"
+// Search + Scrape Movie
+async function scrapeMovie(tmdbId: string, title: string, year: number) {
+  return await providers.runAll({
+    media: {
+      type: 'movie',
+      tmdbId,
+      title,
+      releaseYear: year
     }
+  });
+}
 
-    resp = requests.get(url, headers=headers)
-    # The page JS builds the stream URL dynamically
-    # Look for JSON config or hls URL in the response
-    hls_match = re.search(r'(https?://[^"\']+\.m3u8[^"\']*)', resp.text)
-    if hls_match:
-        return hls_match.group(1)
+// Search + Scrape TV Show
+async function scrapeEpisode(
+  tmdbId: string, title: string, season: number, episode: number
+) {
+  return await providers.runAll({
+    media: {
+      type: 'show',
+      tmdbId,
+      title,
+      season: { number: season },
+      episode: { number: episode }
+    }
+  });
+}
 
-    # Fallback: extract the API endpoint from the page
-    api_match = re.search(r'api\.vidsrc\.to/([a-z0-9/]+)', resp.text)
-    if api_match:
-        api_resp = requests.get(f"https://api.vidsrc.to/{api_match.group(1)}")
-        return api_resp.json().get("stream_url")
+// Run single source
+async function scrapeFromSource(sourceId: string, tmdbId: string, title: string, year: number) {
+  return await providers.runSourceScraper({
+    id: sourceId,  // e.g., 'showbox', 'vidsrc', 'flixhq'
+    media: {
+      type: 'movie',
+      tmdbId,
+      title,
+      releaseYear: year
+    }
+  });
+}
 
-    return None
-```
-
-### Concrete Code Example: FzMovies Download in Python
-
-```python
-from fzmovies_api import Auto
-
-# Download a movie
-auto = Auto(query="Avatar", quality="720p")
-movie_file = auto.run()  # Downloads to current directory
-
-# Or through the search-based API
-from fzmovies_api import Search
-
-search = Search("Avatar")
-results = search.all_results
-for r in results:
-    print(f"{r.title} - {r.quality} - {r.size}")
+// List all available sources
+const sources = providers.listSources();
+console.log(sources.map(s => s.name));
 ```
 
 ---
 
-## 5. KEY THINGS TO WATCH OUT FOR
+## Stream Output Structure
 
-| Issue | Mitigation |
-|---|---|
-| **Domain rotation** (VidSrc changes domains frequently) | Maintain a domain list, check `vidsrc.domains` for updates |
-| **CAPTCHAs** (some sites use Cloudflare) | Use Playwright with stealth plugins or a captcha-solving service |
-| **CORS blocking** (browser can't fetch from these sites) | Run a backend proxy (Node, Python, Cloudflare Worker) |
-| **Rate limiting** | Add delays between requests, rotate user-agents |
-| **DMCA takedowns** (sites go offline regularly) | Have 3-4 fallback sources per movie |
-| **SSL errors** (some sites have expired certs) | Handle SSL verification gracefully in your HTTP client |
+```typescript
+// HLS Stream
+{
+  stream: {
+    type: 'hls',
+    playlist: 'https://cdn.example.com/master.m3u8',
+    headers: {
+      'Referer': 'https://showbox.com/',
+      'User-Agent': 'Mozilla/5.0 ...'
+    },
+    captions: [
+      { type: 'vtt', url: 'https://...', language: 'en', hasCorsRestrictions: false },
+      { type: 'vtt', url: 'https://...', language: 'es', hasCorsRestrictions: false }
+    ]
+  }
+}
 
-Want me to dig deeper into any specific source, show the exact scraping logic for a particular site, or help architect the app structure?
+// Direct File Stream
+{
+  stream: {
+    type: 'file',
+    qualities: {
+      '360': { url: 'https://cdn.../360.mp4' },
+      '480': { url: 'https://cdn.../480.mp4' },
+      '720': { url: 'https://cdn.../720.mp4' },
+      '1080': { url: 'https://cdn.../1080.mp4' }
+    },
+    headers: {
+      'Referer': 'https://goojara.to/'
+    },
+    captions: [...]
+  }
+}
+```
+
+---
+
+# EXPO GO COMPATIBILITY MATRIX
+
+| Approach | Works in Expo Go? | Notes |
+|---|---|---|
+| **SuperEmbed VIP** (embed + WebView) | ✅ Yes | No native modules needed |
+| **VidSrc** (embed + WebView) | ✅ Yes | Fallback domains built-in |
+| **@movie-web/providers** (direct in-app) | ❌ No | Needs `react-native-quick-crypto` native module |
+| **Backend proxy** (server runs scrapers) | ✅ Yes | Expo app calls your backend API |
+| **Expo Dev Client** (eas build) | ✅ Yes | Requires build, not Expo Go |
+| **Kotlin rewrite** | ✅ Yes | Full native, but overkill |
+
+**Recommended Expo Go setup:**
+```tsx
+// Option 1: SuperEmbed + TMDB (works today)
+const embedUrl = `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1`;
+<WebView source={{ uri: embedUrl }} allowsFullscreenVideo />
+
+// Option 2: Backend proxy architecture
+// Server (Node.js):
+const { providers } = require('@movie-web/providers');
+app.get('/api/stream', async (req, res) => {
+  const result = await providers.runAll({ media: req.query });
+  res.json(result.stream);
+});
+// Client (Expo Go):
+const stream = await fetch(`https://your-api.com/api/stream?tmdbId=19995`);
+// Play stream.url in expo-video or WebView
+```
+
+---
+
+**Quick comparison table:**
+
+| Source | Free | Ads | Multi-Audio | Multi-Sub | Downloads | Expo Go |
+|---|---|---|---|---|---|---|
+| SuperEmbed VIP | ✅ | 1 popup | ✅ | ✅ | ❌ | ✅ WebView |
+| VidSrc | ✅ | 2-3 popups | ❌ (mostly) | ✅ | ❌ | ✅ WebView |
+| @movie-web/providers | ✅ | None (direct) | ✅ | ✅ | ✅ (some) | ❌ (needs backend) |
+| CloudStream (direct scrape) | ✅ | None | ✅ | ✅ | ✅ | ❌ (Kotlin) |
+
+
+
+Site	URL Pattern	Type	Notes
+FzMovies	fzmovies.net	Direct downloads	Python SDK available. .cms identifier in MovieBox
+FzTvSeries	fztvseries.net	Direct downloads	TV shows specific
+HDHub4u	hdhub4u.med	Direct downloads	Indian/Hollywood content
+
+
+Megix Repo:    https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json
+Phisher Repo:  https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/refs/heads/builds/plugins.json
+CNC Verse:     https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/CNC.json
+English Repo:  https://codeberg.org/cloudstream/cloudstream-extensions-multilingual/raw/branch/builds/repo.json

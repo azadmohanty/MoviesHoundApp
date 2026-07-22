@@ -40,12 +40,33 @@ const extractQualityTags = (title: string): string[] => {
   return tags;
 };
 
+const isStreamLink = (url: string, siteName: string): boolean => {
+  const lowUrl = url.toLowerCase();
+  const lowSite = siteName.toLowerCase();
+  if (lowUrl.includes('.m3u8') || lowUrl.includes('.mp4') || lowUrl.includes('embed') || lowUrl.includes('player') || lowUrl.includes('play')) {
+    return true;
+  }
+  if (lowSite.includes('vidsrc') || lowSite.includes('superembed') || lowSite.includes('smashy') || lowSite.includes('gokuhd') || lowSite.includes('animeflix')) {
+    return true;
+  }
+  return false;
+};
+
 export const ResultCard: React.FC<ResultCardProps> = ({ item, onPress }) => {
   const tags = extractQualityTags(item.title);
+  const isStream = isStreamLink(item.link, item.siteName);
+  
   return (
     <TouchableOpacity style={styles.card} onPress={onPress}>
       <View style={styles.cardHeader}>
-        <Text style={styles.cardBadge}>{item.siteName.toUpperCase()}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={styles.cardBadge}>{item.siteName.toUpperCase()}</Text>
+          <View style={[styles.categoryBadge, isStream ? styles.streamBadge : styles.downloadBadge]}>
+            <Text style={[styles.categoryBadgeText, isStream ? { color: '#00FF88' } : { color: '#FFE500' }]}>
+              {isStream ? 'STREAM DIRECT' : 'DIRECT DOWNLOAD'}
+            </Text>
+          </View>
+        </View>
         <Text style={styles.arrowIcon}>↗</Text>
       </View>
       <Text style={styles.cardTitle}>{item.title}</Text>
@@ -112,5 +133,25 @@ const styles = StyleSheet.create({
     fontSize: 8,
     color: 'rgba(255, 255, 255, 0.5)',
     letterSpacing: 0.5,
+  },
+  categoryBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderWidth: 0.5,
+    borderRadius: 2,
+  },
+  streamBadge: {
+    borderColor: '#00FF88',
+    backgroundColor: 'rgba(0, 255, 136, 0.05)',
+  },
+  downloadBadge: {
+    borderColor: '#FFE500',
+    backgroundColor: 'rgba(255, 229, 0, 0.05)',
+  },
+  categoryBadgeText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 7,
+    letterSpacing: 0.5,
+    fontWeight: 'bold',
   },
 });

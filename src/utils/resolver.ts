@@ -29,7 +29,8 @@ export const HARDCODED_FALLBACKS: Record<string, string> = {
   rogmovies: 'https://rogmovies.rest',
   topmovies: 'https://moviesleech.asia',
   gokuhd: 'https://gokuhd.com',
-  animeflix: 'https://animeflix.dad'
+  animeflix: 'https://animeflix.dad',
+  vidsrc: 'https://vidsrc2.ru'
 };
 
 export const resolveAllDomains = async (

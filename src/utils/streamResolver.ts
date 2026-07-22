@@ -12,7 +12,7 @@ export const getStreamServerUrl = (
   mediaType: 'movie' | 'tv' | 'anime',
   season: number = 1,
   episode: number = 1,
-  vidsrcBase: string = 'https://vidsrc.sbs'
+  vidsrcBase: string = 'https://vidsrc2.ru'
 ): string => {
   const cleanBase = vidsrcBase.replace(/\/$/, '');
   
@@ -33,8 +33,8 @@ export const getStreamServerUrl = (
   }
   if (serverIndex === 4) {
     return mediaType === 'tv'
-      ? `https://multiembed.to/director.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
-      : `https://multiembed.to/director.php?video_id=${tmdbId}&tmdb=1`;
+      ? `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
+      : `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1`;
   }
   if (serverIndex === 5) {
     return mediaType === 'tv'
@@ -42,7 +42,9 @@ export const getStreamServerUrl = (
       : `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}`;
   }
   if (serverIndex === 6) {
-    return `https://lok-lok.cc/spa/videoPlayPage/search?keyword=${tmdbId}`;
+    return mediaType === 'tv'
+      ? `https://vsrc.su/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vsrc.su/embed/movie/${tmdbId}`;
   }
   return '';
 };
@@ -56,7 +58,7 @@ export const resolveStreamUrl = async (
 ): Promise<StreamResult | null> => {
   try {
     const domainsRaw = await AsyncStorage.getItem('@movieshound_domains_cache');
-    let vidsrcBase = 'https://vidsrc.sbs';
+    let vidsrcBase = 'https://vidsrc2.ru';
     if (domainsRaw) {
       const parsed = JSON.parse(domainsRaw);
       if (parsed.domains && parsed.domains.vidsrc) {

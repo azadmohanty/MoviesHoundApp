@@ -15,7 +15,8 @@ import {
   Modal,
   LayoutAnimation,
   Platform,
-  UIManager
+  UIManager,
+  Animated
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
@@ -130,6 +131,9 @@ export default function HomeScreen() {
   const [searchMode, setSearchMode] = useState<'movies' | 'downloads'>('movies');
   const [downloadResults, setDownloadResults] = useState<SearchResult[]>([]);
   const [downloadLoading, setDownloadLoading] = useState(false);
+  const [isSearchActive, setIsSearchActive] = useState(false);
+  const [exploreFilterVisible, setExploreFilterVisible] = useState(false);
+  const toggleAnim = useRef(new Animated.Value(0)).current;
   const [searchTasks, setSearchTasks] = useState<SearchTask[]>([]);
   const searchId = useRef(0);
   const resultsCountRef = useRef(0);
@@ -448,6 +452,7 @@ export default function HomeScreen() {
     
     setCurrentTab('home');
     setSearchMode('movies');
+    setIsSearchActive(true);
     setResults([]);
     setLoading(true);
     setStatusMessage('Searching titles...');
@@ -475,6 +480,7 @@ export default function HomeScreen() {
     tmdbId?: number
   ) => {
     setSearchMode('downloads');
+    setIsSearchActive(true);
     setResults([]);
     resultsCountRef.current = 0;
     setLoading(true);
@@ -540,16 +546,16 @@ export default function HomeScreen() {
       }
     }, 6000);
 
-    // Stop loading after 15 seconds max
+    // Stop loading after 12 seconds max (Safety Timeout)
     setTimeout(() => {
       if (searchId.current === currentId) {
         setLoading(false);
         setStatusMessage('');
         if (resultsCountRef.current === 0) {
-          setStatusMessage('NO DOWNLOAD LINKS RESOLVED');
+          setStatusMessage('NO DOWNLOAD LINKS RESOLVED. ATTEMPT OTHER SITES.');
         }
       }
-    }, 15000);
+    }, 12000);
   };
 
   const handleSearchSubmitWithIMDb = async (
@@ -562,6 +568,15 @@ export default function HomeScreen() {
     setQuery(title);
     setCategory(suggestedCategory);
     runDownloadScraper(title, type, tmdbId);
+  };
+
+  const handleToggleExploreType = (type: 'movie' | 'tv') => {
+    setExploreType(type);
+    Animated.timing(toggleAnim, {
+      toValue: type === 'movie' ? 0 : 1,
+      duration: 250,
+      useNativeDriver: false,
+    }).start();
   };
 
   const handleWebViewMessage = (siteKey: string, html: string) => {
@@ -661,6 +676,11 @@ export default function HomeScreen() {
     );
   };
 
+  const leftOffset = toggleAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [2, 106],
+  });
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
@@ -693,6 +713,7 @@ export default function HomeScreen() {
                     setShowSuggestions(false);
                     setTmdbSearchResults([]);
                     setResults([]);
+                    setIsSearchActive(false);
                   }
                 }}
                 onSubmitEditing={() => handleSearchSubmit()}
@@ -708,6 +729,7 @@ export default function HomeScreen() {
                     setShowSuggestions(false);
                     setTmdbSearchResults([]);
                     setResults([]);
+                    setIsSearchActive(false);
                   }}
                 >
                   <Text style={styles.clearSearchInputText}>×</Text>
@@ -789,35 +811,40 @@ export default function HomeScreen() {
 
           {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
 
-          {searchMode === 'movies' && tmdbSearchResults.length > 0 ? (
-            <FlatList
-              data={tmdbSearchResults}
-              keyExtractor={(item) => `search-tmdb-${item.id}`}
-              numColumns={3}
-              contentContainerStyle={styles.exploreGrid}
-              columnWrapperStyle={styles.exploreGridRow}
-              renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
-            />
-          ) : searchMode === 'downloads' && (results.length > 0 || loading) ? (
-            <FlatList
-              data={results}
-              keyExtractor={(item) => item.link}
-              contentContainerStyle={styles.listContent}
-              renderItem={({ item }) => (
-                <ResultCard item={item} onPress={() => openLink(item.link)} />
-              )}
-              ListEmptyComponent={
-                !loading ? (
-                  <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyText}>NO DOWNLOAD LINKS FOUND</Text>
-                  </View>
-                ) : null
-              }
-            />
-          ) : query.trim().length > 0 && !loading && tmdbSearchResults.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
-            </View>
+          {isSearchActive ? (
+            searchMode === 'movies' ? (
+              <FlatList
+                data={tmdbSearchResults}
+                keyExtractor={(item) => `search-tmdb-${item.id}`}
+                numColumns={3}
+                contentContainerStyle={styles.exploreGrid}
+                columnWrapperStyle={styles.exploreGridRow}
+                renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+                ListEmptyComponent={
+                  !loading ? (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>NO RESULTS FOUND</Text>
+                    </View>
+                  ) : null
+                }
+              />
+            ) : (
+              <FlatList
+                data={results}
+                keyExtractor={(item) => item.link}
+                contentContainerStyle={styles.listContent}
+                renderItem={({ item }) => (
+                  <ResultCard item={item} onPress={() => openLink(item.link)} />
+                )}
+                ListEmptyComponent={
+                  !loading ? (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>NO DOWNLOAD LINKS FOUND</Text>
+                    </View>
+                  ) : null
+                }
+              />
+            )
           ) : (
             <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
               {/* Featured Hero Banner at Top of Home Feed */}
@@ -909,86 +936,26 @@ export default function HomeScreen() {
       {/* TAB 2: EXPLORE (FULL-CONTROL FILTERS) */}
       {currentTab === 'explore' && (
         <View style={styles.tabContent}>
-          <Text style={styles.sectionHeaderTitle}>EXPLORE & FILTER ENGINE</Text>
-
-          {/* Media Type Toggle: Movies vs TV Shows */}
-          <View style={styles.exploreTypeRow}>
-            <TouchableOpacity
-              style={[styles.typeToggle, exploreType === 'movie' && { backgroundColor: accentColor, borderColor: accentColor }]}
-              onPress={() => setExploreType('movie')}
-            >
-              <Text style={[styles.typeToggleText, exploreType === 'movie' ? { color: '#0A0A0C' } : { color: '#FFFFFF' }]}>MOVIES</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.typeToggle, exploreType === 'tv' && { backgroundColor: accentColor, borderColor: accentColor }]}
-              onPress={() => setExploreType('tv')}
-            >
-              <Text style={[styles.typeToggleText, exploreType === 'tv' ? { color: '#0A0A0C' } : { color: '#FFFFFF' }]}>TV SHOWS</Text>
-            </TouchableOpacity>
+          {/* Custom Sliding Toggle Switch */}
+          <View style={styles.toggleOuterContainer}>
+            <View style={styles.animatedToggleContainer}>
+              <Animated.View style={[styles.animatedToggleSlider, { left: leftOffset }]} />
+              <TouchableOpacity
+                style={styles.animatedToggleButton}
+                onPress={() => handleToggleExploreType('movie')}
+                activeOpacity={0.9}
+              >
+                <Text style={[styles.animatedToggleText, exploreType === 'movie' ? styles.toggleTextActive : styles.toggleTextInactive]}>MOVIES</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.animatedToggleButton}
+                onPress={() => handleToggleExploreType('tv')}
+                activeOpacity={0.9}
+              >
+                <Text style={[styles.animatedToggleText, exploreType === 'tv' ? styles.toggleTextActive : styles.toggleTextInactive]}>SERIES</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-
-          {/* Genre Filters Horizontal Scroll */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-            {Object.keys(TMDB_GENRES).map((genreName) => (
-              <TouchableOpacity
-                key={genreName}
-                style={[
-                  styles.filterPill,
-                  selectedGenre === genreName && { backgroundColor: accentColor, borderColor: accentColor }
-                ]}
-                onPress={() => setSelectedGenre(genreName)}
-              >
-                <Text style={[
-                  styles.filterPillText,
-                  selectedGenre === genreName ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
-                ]}>
-                  {genreName.toUpperCase()}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          {/* Granular Year Selector (Complete Freedom) */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-            {YEAR_OPTIONS.map((yr) => (
-              <TouchableOpacity
-                key={yr}
-                style={[
-                  styles.filterPill,
-                  selectedYear === yr && { backgroundColor: '#FFE500', borderColor: '#FFE500' }
-                ]}
-                onPress={() => setSelectedYear(yr)}
-              >
-                <Text style={[
-                  styles.filterPillText,
-                  selectedYear === yr ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
-                ]}>
-                  {yr}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          {/* Granular Rating Selector */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-            {RATING_OPTIONS.map((rat) => (
-              <TouchableOpacity
-                key={rat.label}
-                style={[
-                  styles.filterPill,
-                  selectedRating === rat.value && { backgroundColor: '#00FF88', borderColor: '#00FF88' }
-                ]}
-                onPress={() => setSelectedRating(rat.value)}
-              >
-                <Text style={[
-                  styles.filterPillText,
-                  selectedRating === rat.value ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
-                ]}>
-                  ★ {rat.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
 
           {exploreLoading ? (
             <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />
@@ -997,7 +964,7 @@ export default function HomeScreen() {
               data={exploreMedia}
               keyExtractor={(item) => `explore-${item.id}`}
               numColumns={3}
-              contentContainerStyle={styles.exploreGrid}
+              contentContainerStyle={[styles.exploreGrid, { paddingBottom: 100 }]}
               columnWrapperStyle={styles.exploreGridRow}
               renderItem={({ item }) => renderFeedCard(item, exploreType, 'all')}
               ListEmptyComponent={
@@ -1007,6 +974,115 @@ export default function HomeScreen() {
               }
             />
           )}
+
+          {/* Floating Action Button (FAB) at Bottom-Center */}
+          <TouchableOpacity
+            style={styles.filterFAB}
+            onPress={() => setExploreFilterVisible(true)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="funnel-outline" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+            <Text style={styles.filterFABText}>FILTER BY</Text>
+          </TouchableOpacity>
+
+          {/* Custom Slide-Up Bottom Sheet Modal */}
+          <Modal
+            visible={exploreFilterVisible}
+            animationType="slide"
+            transparent={true}
+            onRequestClose={() => setExploreFilterVisible(false)}
+          >
+            <TouchableOpacity
+              style={styles.modalBackdrop}
+              activeOpacity={1}
+              onPress={() => setExploreFilterVisible(false)}
+            >
+              <View style={styles.bottomSheetContent} onStartShouldSetResponder={() => true}>
+                <View style={styles.bottomSheetHeader}>
+                  <Text style={styles.bottomSheetTitle}>FILTER SETTINGS</Text>
+                  <TouchableOpacity onPress={() => setExploreFilterVisible(false)}>
+                    <Text style={styles.bottomSheetClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView style={styles.bottomSheetScroll} showsVerticalScrollIndicator={false}>
+                  {/* Genres selection */}
+                  <Text style={styles.bottomSheetSubHeading}>GENRES</Text>
+                  <View style={styles.bottomSheetGrid}>
+                    {Object.keys(TMDB_GENRES).map((genreName) => (
+                      <TouchableOpacity
+                        key={genreName}
+                        style={[
+                          styles.bottomSheetPill,
+                          selectedGenre === genreName && styles.bottomSheetPillActive
+                        ]}
+                        onPress={() => setSelectedGenre(genreName)}
+                      >
+                        <Text style={[
+                          styles.bottomSheetPillText,
+                          selectedGenre === genreName && styles.bottomSheetPillTextActive
+                        ]}>
+                          {genreName.toUpperCase()}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  {/* Year selection */}
+                  <Text style={styles.bottomSheetSubHeading}>RELEASE YEAR</Text>
+                  <View style={styles.bottomSheetGrid}>
+                    {YEAR_OPTIONS.map((yr) => (
+                      <TouchableOpacity
+                        key={yr}
+                        style={[
+                          styles.bottomSheetPill,
+                          selectedYear === yr && styles.bottomSheetPillActive
+                        ]}
+                        onPress={() => setSelectedYear(yr)}
+                      >
+                        <Text style={[
+                          styles.bottomSheetPillText,
+                          selectedYear === yr && styles.bottomSheetPillTextActive
+                        ]}>
+                          {yr}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  {/* Rating selection */}
+                  <Text style={styles.bottomSheetSubHeading}>MINIMUM RATING</Text>
+                  <View style={styles.bottomSheetGrid}>
+                    {RATING_OPTIONS.map((rat) => (
+                      <TouchableOpacity
+                        key={rat.label}
+                        style={[
+                          styles.bottomSheetPill,
+                          selectedRating === rat.value && styles.bottomSheetPillActive
+                        ]}
+                        onPress={() => setSelectedRating(rat.value)}
+                      >
+                        <Text style={[
+                          styles.bottomSheetPillText,
+                          selectedRating === rat.value && styles.bottomSheetPillTextActive
+                        ]}>
+                          ★ {rat.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <View style={{ height: 60 }} />
+                </ScrollView>
+
+                <TouchableOpacity
+                  style={styles.applyButton}
+                  onPress={() => setExploreFilterVisible(false)}
+                >
+                  <Text style={styles.applyButtonText}>APPLY FILTERS</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          </Modal>
         </View>
       )}
 
@@ -1143,6 +1219,8 @@ export default function HomeScreen() {
               setQuery('');
               setResults([]);
               setCategory('all');
+              setIsSearchActive(false);
+              setTmdbSearchResults([]);
             } else {
               setCurrentTab('home');
             }
@@ -1161,7 +1239,12 @@ export default function HomeScreen() {
 
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('explore')}
+          onPress={() => {
+            setCurrentTab('explore');
+            setIsSearchActive(false);
+            setQuery('');
+            setTmdbSearchResults([]);
+          }}
           activeOpacity={0.8}
         >
           <Ionicons
@@ -1176,7 +1259,12 @@ export default function HomeScreen() {
 
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('me')}
+          onPress={() => {
+            setCurrentTab('me');
+            setIsSearchActive(false);
+            setQuery('');
+            setTmdbSearchResults([]);
+          }}
           activeOpacity={0.8}
         >
           <Ionicons
@@ -1267,6 +1355,7 @@ export default function HomeScreen() {
             source={{ uri: task.searchUrl }}
             javaScriptEnabled={true}
             domStorageEnabled={true}
+            userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             onShouldStartLoadWithRequest={(request) => {
               return request.url.startsWith('http://') || request.url.startsWith('https://');
             }}
@@ -1956,6 +2045,153 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: '#FF2D55',
     fontFamily: 'Ndot57',
+  },
+  toggleOuterContainer: {
+    alignItems: 'center',
+    marginVertical: 16,
+  },
+  animatedToggleContainer: {
+    width: 220,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    flexDirection: 'row',
+    position: 'relative',
+    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  animatedToggleSlider: {
+    position: 'absolute',
+    width: 108,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FF2D55',
+    top: 3,
+  },
+  animatedToggleButton: {
+    flex: 1,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2,
+  },
+  animatedToggleText: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    letterSpacing: 1.5,
+  },
+  toggleTextActive: {
+    color: '#0A0A0C',
+  },
+  toggleTextInactive: {
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  filterFAB: {
+    position: 'absolute',
+    bottom: 80,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(10, 10, 12, 0.9)',
+    borderWidth: 1,
+    borderColor: '#FF2D55',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    shadowColor: '#FF2D55',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  filterFABText: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 1.5,
+  },
+  bottomSheetContent: {
+    backgroundColor: '#0A0A0C',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderTopWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    maxHeight: '75%',
+    paddingBottom: 24,
+  },
+  bottomSheetHeader: {
+    height: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  bottomSheetTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 12,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  bottomSheetClose: {
+    fontSize: 18,
+    color: '#FF2D55',
+    fontFamily: 'Ndot57',
+  },
+  bottomSheetScroll: {
+    paddingHorizontal: 20,
+  },
+  bottomSheetSubHeading: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 20,
+    marginBottom: 10,
+    letterSpacing: 1,
+  },
+  bottomSheetGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  bottomSheetPill: {
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  bottomSheetPillActive: {
+    backgroundColor: '#FF2D55',
+    borderColor: '#FF2D55',
+  },
+  bottomSheetPillText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255, 255, 255, 0.6)',
+    letterSpacing: 0.5,
+  },
+  bottomSheetPillTextActive: {
+    color: '#0A0A0C',
+    fontWeight: 'bold',
+  },
+  applyButton: {
+    backgroundColor: '#FF2D55',
+    marginHorizontal: 20,
+    marginTop: 15,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 4,
+  },
+  applyButtonText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#0A0A0C',
+    letterSpacing: 1.5,
   },
   hiddenContainer: {
     width: 0,

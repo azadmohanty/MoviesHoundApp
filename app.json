@@ -21,13 +21,13 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "extra": {
-      "eas": {
-        "projectId": "ddc2d7d4-0a6e-434a-a31a-ab9c4025f8cf"
-      }
-    },
     "plugins": [
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a0836d90-0389-4f6f-9c9f-f80f3a2b1920"
+      }
+    }
   }
 }
