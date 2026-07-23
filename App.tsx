@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFonts } from 'expo-font';
-import HomeScreen from './src/screens/HomeScreen';
+import { BottomNavigation } from './src/navigation/BottomNavigation';
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -19,7 +19,7 @@ export default function App() {
     );
   }
 
-  return <HomeScreen />;
+  return <BottomNavigation />;
 }
 
 const styles = StyleSheet.create({
