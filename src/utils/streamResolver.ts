@@ -6,6 +6,8 @@ export type StreamResult = {
   streamUrl: string;
   sourceName: string;
   isDirectStream?: boolean;
+  language?: string;
+  availableLanguages?: string[];
 };
 
 export const getStreamServerUrl = (
@@ -28,26 +30,22 @@ export const getStreamServerUrl = (
     return `moviebox://${tmdbId}`;
   }
   if (serverIndex === 2) {
-    // Torrentio / AutoEmbed (Dynamically resolved)
-    return `torrentio://${tmdbId}`;
+    // VidSrc 2.RU (Native VidSrc embed mirror)
+    return mediaType === 'tv'
+      ? `${cleanBase}/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
+      : `${cleanBase}/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
   }
   if (serverIndex === 3) {
-    // SuperEmbed Simple Player (Native multi-server iframe: Blogger, Streamtape, etc.)
+    // SuperEmbed Player (Native multi-server iframe)
     return mediaType === 'tv'
       ? `${cleanSuper}/?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
       : `${cleanSuper}/?video_id=${tmdbId}&tmdb=1`;
   }
   if (serverIndex === 4) {
-    // SuperEmbed VIP Directstream
+    // AnyEmbed (formerly SmashyStream)
     return mediaType === 'tv'
-      ? `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
-      : `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1`;
-  }
-  if (serverIndex === 5) {
-    // Vidsrc CC / AnyEmbed Embedded Player
-    return mediaType === 'tv'
-      ? `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`
-      : `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
+      ? `${cleanAny}/embed/tmdb-tv-${tmdbId}-${season}-${episode}`
+      : `${cleanAny}/embed/tmdb-movie-${tmdbId}`;
   }
   return '';
 };
@@ -58,31 +56,40 @@ export const resolveStreamUrl = async (
   title: string = '',
   season: number = 1,
   episode: number = 1,
-  serverIndex: number = 1
+  serverIndex: number = 1,
+  preferredLanguage: string = 'Original'
 ): Promise<StreamResult | null> => {
   try {
     // Server 1: MovieBox Direct MP4
     if (serverIndex === 1 && title) {
-      const mbStream = await resolveMovieBoxStream(title, mediaType === 'tv' ? 'tv' : 'movie', season, episode);
+      const mbStream = await resolveMovieBoxStream(
+        title,
+        mediaType === 'tv' ? 'tv' : 'movie',
+        season,
+        episode,
+        preferredLanguage
+      );
       if (mbStream) {
         return {
           streamUrl: mbStream.url,
           sourceName: mbStream.qualityLabel || 'Server 1 (MovieBox MP4)',
-          isDirectStream: true
+          isDirectStream: true,
+          language: mbStream.language,
+          availableLanguages: mbStream.availableLanguages
         };
       }
     }
 
-    // Server 2: Torrentio HLS Stream
+    // Server 2: VidSrc 2.RU Direct Player
     if (serverIndex === 2) {
-      const torStream = await resolveTorrentioStream(tmdbId, mediaType === 'tv' ? 'tv' : 'movie', season, episode);
-      if (torStream) {
-        return {
-          streamUrl: torStream.url,
-          sourceName: torStream.qualityLabel || 'Server 2 (Torrentio HLS)',
-          isDirectStream: true
-        };
-      }
+      const vidsrcUrl = mediaType === 'tv'
+        ? `https://vidsrc2.ru/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
+        : `https://vidsrc2.ru/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
+      return {
+        streamUrl: vidsrcUrl,
+        sourceName: 'Server 2 (VidSrc 2.RU)',
+        isDirectStream: false
+      };
     }
 
     // Embed Fallbacks (Servers 3, 4, 5)

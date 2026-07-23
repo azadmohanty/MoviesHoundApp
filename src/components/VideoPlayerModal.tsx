@@ -62,6 +62,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [tvDetails, setTvDetails] = useState<TVShowDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [showTroubleshoot, setShowTroubleshoot] = useState(false);
+  const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('Original');
 
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -83,12 +85,44 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     !isDirectVideoFile
   );
 
-  const player = useVideoPlayer(isDirectVideoFile ? activeUrl || '' : '', (playerInstance) => {
+  const player = useVideoPlayer('', (playerInstance) => {
     playerInstance.loop = false;
-    if (isDirectVideoFile) {
-      playerInstance.play();
-    }
   });
+
+  // Feed new direct video URLs into the player instance whenever activeUrl changes
+  useEffect(() => {
+    if (
+      activeUrl &&
+      (activeUrl.includes('.mp4') || activeUrl.includes('.m3u8')) &&
+      !activeUrl.startsWith('moviebox://') &&
+      !activeUrl.startsWith('torrentio://')
+    ) {
+      try {
+        player.replaceAsync({
+          uri: activeUrl,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://fmoviesunblocked.net/'
+          }
+        }).then(() => {
+          player.play();
+        }).catch((e: any) => {
+          console.warn('[VideoPlayer] player.replaceAsync error:', e);
+        });
+      } catch (e) {
+        console.warn('[VideoPlayer] player.replaceAsync exception:', e);
+      }
+    }
+  }, [activeUrl]);
+
+  const handleClose = () => {
+    try {
+      player.pause();
+    } catch (e) {}
+    setActiveUrl(null);
+    setLoadingStream(false);
+    onClose();
+  };
 
   useEffect(() => {
     setSelectedServer(1);
@@ -96,11 +130,18 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setCurrentEpisode(1);
     setShowTroubleshoot(false);
     setDebugLogs([]);
+    setActiveUrl(null); // Don't auto-resolve on open; show poster first
+
     if (visible && mediaItem) {
       addLog(`Opened media: "${mediaItem.title || title}" (TMDB ID: ${mediaItem.id})`);
-      updatePlayerUrl(1, 1, 1);
-    } else {
-      setActiveUrl(videoUrl);
+    }
+
+    if (!visible) {
+      try {
+        player.pause();
+      } catch (e) {}
+      setActiveUrl(null);
+      setLoadingStream(false);
     }
   }, [videoUrl, visible]);
 
@@ -131,14 +172,15 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     }
   };
 
-  const updatePlayerUrl = async (serverIdx: number, season: number, episode: number) => {
+  const updatePlayerUrl = async (serverIdx: number, season: number, episode: number, lang: string = selectedLanguage) => {
     setSelectedServer(serverIdx);
     setCurrentSeason(season);
     setCurrentEpisode(episode);
+    setSelectedLanguage(lang);
     setActiveUrl(null);
 
     if (mediaItem) {
-      addLog(`Switching to Server ${serverIdx} (Season ${season}, Ep ${episode})`);
+      addLog(`Switching to Server ${serverIdx} (Season ${season}, Ep ${episode}, Lang ${lang})`);
       if (serverIdx === 1 || serverIdx === 2) {
         setLoadingStream(true);
         addLog(`Resolving Server ${serverIdx} stream asynchronously...`);
@@ -148,12 +190,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           mediaItem.title || title || '',
           season,
           episode,
-          serverIdx
+          serverIdx,
+          lang
         );
 
         if (res && res.streamUrl && (res.streamUrl.startsWith('http://') || res.streamUrl.startsWith('https://'))) {
-          addLog(`Server ${serverIdx} resolved successfully -> ${res.streamUrl.substring(0, 60)}...`);
+          addLog(`Server ${serverIdx} resolved successfully (${res.language || 'Original'}) -> ${res.streamUrl.substring(0, 60)}...`);
           setActiveUrl(res.streamUrl);
+          if (res.availableLanguages && res.availableLanguages.length > 0) {
+            setAvailableLanguages(res.availableLanguages);
+          }
         } else {
           addLog(`Server ${serverIdx} resolution returned no direct link. Falling back to Server 3 (SuperEmbed Simple)...`);
           const fallbackUrl = getStreamServerUrl(3, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
@@ -201,12 +247,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={handleClose}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
       <SafeAreaView style={styles.container}>
         {/* Top Header Bar */}
         <View style={styles.topHeader}>
-          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+          <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
             <Text style={styles.closeText}>✕</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle} numberOfLines={1}>
@@ -246,6 +292,32 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 allowsInlineMediaPlayback={true}
                 mediaPlaybackRequiresUserAction={false}
                 injectedJavaScript={blockAdsJS}
+                onShouldStartLoadWithRequest={(request) => {
+                  const url = request.url;
+                  // Allow initial load, inner player frames, and legitimate stream player domains
+                  if (
+                    url.startsWith('http://') ||
+                    url.startsWith('https://')
+                  ) {
+                    if (
+                      url.includes('multiembed') ||
+                      url.includes('streamingnow') ||
+                      url.includes('vidsrc') ||
+                      url.includes('autoembed') ||
+                      url.includes('anyembed') ||
+                      url.includes('smashystream') ||
+                      url.includes('hakunaymatata') ||
+                      url.includes('embed') ||
+                      url === activeUrl ||
+                      request.isTopFrame === false
+                    ) {
+                      return true;
+                    }
+                  }
+                  // Block external ad popups, intent:// URLs, and app store hijacks
+                  addLog(`Blocked ad popup redirect -> ${url.substring(0, 50)}...`);
+                  return false;
+                }}
               />
             ) : (
               <View style={styles.noPlayerBox}>
@@ -253,8 +325,55 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               </View>
             )
           ) : (
-            <View style={styles.noPlayerBox}>
-              <Text style={styles.noPlayerText}>NO DIRECT STREAM. SELECT SERVER BELOW.</Text>
+            <View style={styles.posterPreviewContainer}>
+              {(() => {
+                const backdropUri = mediaItem?.backdropUrl
+                  ? mediaItem.backdropUrl
+                  : mediaItem?.backdropPath
+                  ? mediaItem.backdropPath.startsWith('http')
+                    ? mediaItem.backdropPath
+                    : `https://image.tmdb.org/t/p/w780${mediaItem.backdropPath}`
+                  : null;
+
+                const posterUri = mediaItem?.posterUrl
+                  ? mediaItem.posterUrl
+                  : mediaItem?.posterPath
+                  ? mediaItem.posterPath.startsWith('http')
+                    ? mediaItem.posterPath
+                    : `https://image.tmdb.org/t/p/w500${mediaItem.posterPath}`
+                  : backdropUri;
+
+                return (
+                  <>
+                    {/* Blurred 16:9 Ambient Backdrop */}
+                    {backdropUri ? (
+                      <Image
+                        source={{ uri: backdropUri }}
+                        style={styles.blurredBackdropImage}
+                        blurRadius={20}
+                        resizeMode="cover"
+                      />
+                    ) : null}
+                    {/* Dark Tint Overlay */}
+                    <View style={styles.posterOverlayGradient} />
+
+                    {/* Floating 2:3 Sharp Poster Card */}
+                    {posterUri ? (
+                      <View style={styles.floatingPosterWrapper}>
+                        <Image
+                          source={{ uri: posterUri }}
+                          style={styles.floatingPosterImage}
+                          resizeMode="cover"
+                        />
+                      </View>
+                    ) : (
+                      <View style={styles.noPlayerBox}>
+                        <Text style={styles.noPlayerText}>READY TO STREAM</Text>
+                      </View>
+                    )}
+                  </>
+                );
+              })()}
             </View>
           )}
 
@@ -312,12 +431,26 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 </TouchableOpacity>
               </View>
 
-              {/* Enlarged Full-Width Download Button */}
-              {onDownloadPress && (
-                <TouchableOpacity style={styles.largeDownloadButton} onPress={() => onDownloadPress(currentSeason)}>
-                  <Text style={styles.largeDownloadButtonText}>↓ DOWNLOAD OPTIONS</Text>
+              {/* Side-By-Side Primary Action Row: STREAM NOW & DOWNLOAD */}
+              <View style={styles.primaryActionRow}>
+                <TouchableOpacity
+                  style={styles.streamActionButton}
+                  onPress={() => updatePlayerUrl(selectedServer, currentSeason, currentEpisode)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.streamActionText}>▶ STREAM NOW</Text>
                 </TouchableOpacity>
-              )}
+
+                {onDownloadPress && (
+                  <TouchableOpacity
+                    style={styles.downloadActionButton}
+                    onPress={() => onDownloadPress(currentSeason)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.downloadActionText}>↓ DOWNLOAD</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
 
               <Text style={styles.overviewText}>{mediaItem.overview || 'NO OVERVIEW AVAILABLE.'}</Text>
 
@@ -325,13 +458,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               <View style={styles.tvSection}>
                 <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
-                  {[1, 2, 3, 4, 5].map((idx) => {
+                  {[1, 2, 3, 4].map((idx) => {
                     let label = `SERVER ${idx}`;
                     if (idx === 1) label = 'SERVER 1 (MOVIEBOX MP4)';
-                    if (idx === 2) label = 'SERVER 2 (TORRENTIO HLS)';
-                    if (idx === 3) label = 'SERVER 3 (SUPEREMBED SIMPLE)';
-                    if (idx === 4) label = 'SERVER 4 (SUPEREMBED VIP)';
-                    if (idx === 5) label = 'SERVER 5 (VIDSRC CC)';
+                    if (idx === 2) label = 'SERVER 2 (VIDSRC 2.RU)';
+                    if (idx === 3) label = 'SERVER 3 (SUPEREMBED)';
+                    if (idx === 4) label = 'SERVER 4 (ANYEMBED)';
                     return (
                       <TouchableOpacity
                         key={`server-${idx}`}
@@ -352,6 +484,32 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   })}
                 </ScrollView>
               </View>
+
+              {/* Dynamic Audio Dub Selector for MovieBox */}
+              {selectedServer === 1 && availableLanguages.length > 1 && (
+                <View style={[styles.tvSection, { marginTop: 12 }]}>
+                  <Text style={styles.sectionHeading}>SELECT AUDIO TRACK / DUB</Text>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                    {availableLanguages.map((lang) => (
+                      <TouchableOpacity
+                        key={`lang-${lang}`}
+                        style={[
+                          styles.serverPill,
+                          selectedLanguage === lang && { backgroundColor: '#FF2D55', borderColor: '#FF2D55' }
+                        ]}
+                        onPress={() => updatePlayerUrl(1, currentSeason, currentEpisode, lang)}
+                      >
+                        <Text style={[
+                          styles.serverPillText,
+                          selectedLanguage === lang ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
+                        ]}>
+                          🌐 {lang.toUpperCase()} AUDIO
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
 
               {/* Troubleshooting & Unblocking Guide Panel */}
               <View style={styles.troubleContainer}>
@@ -827,5 +985,101 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     lineHeight: 14,
     letterSpacing: 0.2,
+  },
+  posterPreviewContainer: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+    backgroundColor: '#0A0A0C',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  blurredBackdropImage: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.65,
+  },
+  posterOverlayGradient: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10, 10, 12, 0.45)',
+  },
+  floatingPosterWrapper: {
+    height: '85%',
+    aspectRatio: 2 / 3,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    elevation: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+  },
+  floatingPosterImage: {
+    width: '100%',
+    height: '100%',
+  },
+  streamNowOverlayButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#FF2D55',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 10,
+    shadowColor: '#FF2D55',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+  },
+  streamNowOverlayIcon: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    marginLeft: 3, // Optical centering for play triangle
+  },
+  primaryActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginVertical: 12,
+    width: '100%',
+  },
+  streamActionButton: {
+    flex: 1,
+    backgroundColor: '#FF2D55',
+    paddingVertical: 14,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#FF2D55',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  streamActionText: {
+    fontFamily: 'Ndot57',
+    fontSize: 12,
+    color: '#FFFFFF',
+    letterSpacing: 1.2,
+  },
+  downloadActionButton: {
+    flex: 1,
+    backgroundColor: '#FFE500',
+    paddingVertical: 14,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#FFE500',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  downloadActionText: {
+    fontFamily: 'Ndot57',
+    fontSize: 12,
+    color: '#0A0A0C',
+    letterSpacing: 1.2,
   },
 });
