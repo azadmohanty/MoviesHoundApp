@@ -21,34 +21,33 @@ export const getStreamServerUrl = (
 ): string => {
   const cleanBase = vidsrcBase.replace(/\/$/, '');
   const cleanSuper = superembedBase.replace(/\/$/, '');
-  const cleanTo = vidsrctoBase.replace(/\/$/, '');
   const cleanAny = anyembedBase.replace(/\/$/, '');
   
   if (serverIndex === 1) {
-    // MovieBox (Server 1 Direct MP4 - Dynamic resolution)
+    // MovieBox Direct MP4 (Dynamically resolved)
     return `moviebox://${tmdbId}`;
   }
   if (serverIndex === 2) {
-    // Torrentio (Server 2 HLS Stream - Dynamic resolution)
+    // Torrentio / AutoEmbed (Dynamically resolved)
     return `torrentio://${tmdbId}`;
   }
   if (serverIndex === 3) {
-    // SuperEmbed VIP Player
+    // SuperEmbed Simple Player (Native multi-server iframe: Blogger, Streamtape, etc.)
+    return mediaType === 'tv'
+      ? `${cleanSuper}/?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
+      : `${cleanSuper}/?video_id=${tmdbId}&tmdb=1`;
+  }
+  if (serverIndex === 4) {
+    // SuperEmbed VIP Directstream
     return mediaType === 'tv'
       ? `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
       : `${cleanSuper}/directstream.php?video_id=${tmdbId}&tmdb=1`;
   }
-  if (serverIndex === 4) {
-    // VidSrc 2.RU / Dynamic Resolved Domain
-    return mediaType === 'tv'
-      ? `${cleanBase}/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
-      : `${cleanBase}/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
-  }
   if (serverIndex === 5) {
-    // AnyEmbed
+    // Vidsrc CC / AnyEmbed Embedded Player
     return mediaType === 'tv'
-      ? `${cleanAny}/embed/tmdb-tv-${tmdbId}-${season}-${episode}`
-      : `${cleanAny}/embed/tmdb-movie-${tmdbId}`;
+      ? `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
   }
   return '';
 };

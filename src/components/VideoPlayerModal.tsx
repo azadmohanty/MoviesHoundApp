@@ -53,15 +53,35 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [currentEpisode, setCurrentEpisode] = useState(1);
   const [selectedServer, setSelectedServer] = useState(1);
   const [vidsrcBase, setVidsrcBase] = useState('https://vidsrc.sbs');
-  const [activeUrl, setActiveUrl] = useState<string | null>(videoUrl);
+  const [activeUrl, setActiveUrl] = useState<string | null>(null);
   const [loadingStream, setLoadingStream] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [castList, setCastList] = useState<CastMember[]>([]);
   const [similarList, setSimilarList] = useState<TMDBMediaItem[]>([]);
   const [tvDetails, setTvDetails] = useState<TVShowDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [showTroubleshoot, setShowTroubleshoot] = useState(false);
 
-  const isDirectVideoFile = activeUrl?.includes('.m3u8') || activeUrl?.includes('.mp4');
+  const addLog = (msg: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const entry = `[${timestamp}] ${msg}`;
+    console.log(entry);
+    setDebugLogs(prev => [entry, ...prev.slice(0, 49)]);
+  };
+
+  const isDirectVideoFile = Boolean(
+    activeUrl &&
+    (activeUrl.includes('.m3u8') || activeUrl.includes('.mp4')) &&
+    !activeUrl.startsWith('moviebox://') &&
+    !activeUrl.startsWith('torrentio://')
+  );
+
+  const isWebViewUrl = Boolean(
+    activeUrl &&
+    (activeUrl.startsWith('http://') || activeUrl.startsWith('https://')) &&
+    !isDirectVideoFile
+  );
 
   const player = useVideoPlayer(isDirectVideoFile ? activeUrl || '' : '', (playerInstance) => {
     playerInstance.loop = false;
@@ -75,7 +95,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setCurrentSeason(1);
     setCurrentEpisode(1);
     setShowTroubleshoot(false);
+    setDebugLogs([]);
     if (visible && mediaItem) {
+      addLog(`Opened media: "${mediaItem.title || title}" (TMDB ID: ${mediaItem.id})`);
       updatePlayerUrl(1, 1, 1);
     } else {
       setActiveUrl(videoUrl);
@@ -92,16 +114,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     if (!mediaItem) return;
     try {
       setLoadingDetails(true);
-      
-      // Load domains cache
-      const domainsRaw = await AsyncStorage.getItem('@movieshound_domains_cache');
-      if (domainsRaw) {
-        const parsed = JSON.parse(domainsRaw);
-        if (parsed.domains && parsed.domains.vidsrc) {
-          setVidsrcBase(parsed.domains.vidsrc.replace(/\/$/, ''));
-        }
-      }
-
       const credits = await getMediaCredits(mediaItem.id, mediaItem.mediaType || 'movie');
       setCastList(credits);
 
@@ -112,8 +124,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
         const tv = await getTVShowDetails(mediaItem.id);
         setTvDetails(tv);
       }
-    } catch (e) {
-      console.warn('Error loading media extras:', e);
+    } catch (e: any) {
+      addLog(`Error loading media extras: ${e.message}`);
     } finally {
       setLoadingDetails(false);
     }
@@ -123,9 +135,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setSelectedServer(serverIdx);
     setCurrentSeason(season);
     setCurrentEpisode(episode);
+    setActiveUrl(null);
+
     if (mediaItem) {
+      addLog(`Switching to Server ${serverIdx} (Season ${season}, Ep ${episode})`);
       if (serverIdx === 1 || serverIdx === 2) {
         setLoadingStream(true);
+        addLog(`Resolving Server ${serverIdx} stream asynchronously...`);
         const res = await resolveStreamUrl(
           mediaItem.id,
           mediaItem.mediaType || 'movie',
@@ -134,66 +150,50 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           episode,
           serverIdx
         );
-        if (res && res.streamUrl) {
+
+        if (res && res.streamUrl && (res.streamUrl.startsWith('http://') || res.streamUrl.startsWith('https://'))) {
+          addLog(`Server ${serverIdx} resolved successfully -> ${res.streamUrl.substring(0, 60)}...`);
           setActiveUrl(res.streamUrl);
         } else {
-          // Fallback to SuperEmbed if direct stream is unavailable
+          addLog(`Server ${serverIdx} resolution returned no direct link. Falling back to Server 3 (SuperEmbed Simple)...`);
           const fallbackUrl = getStreamServerUrl(3, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
           setActiveUrl(fallbackUrl);
         }
         setLoadingStream(false);
       } else {
         const newUrl = getStreamServerUrl(serverIdx, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
+        addLog(`Server ${serverIdx} URL -> ${newUrl}`);
         setActiveUrl(newUrl);
       }
     }
   };
 
+  // Safe CSS Ad-Blocker (Prevents removeChild Virtual DOM crashes)
   const blockAdsJS = `
     (function() {
-      // 1. Overwrite popups
       window.open = function() { return null; };
       window.alert = function() { return true; };
       window.confirm = function() { return true; };
 
-      // 2. Hide and remove dynamic overlay banners and popup containers
-      const clearOverlayAds = () => {
-        const allDivs = document.getElementsByTagName('div');
-        for (let i = 0; i < allDivs.length; i++) {
-          const div = allDivs[i];
-          const style = window.getComputedStyle(div);
-          const zIndex = parseInt(style.zIndex);
-          
-          if (zIndex > 99 && !div.id.includes('player') && !div.className.includes('jwplayer')) {
-            div.style.display = 'none';
-            div.remove();
+      const injectCssAdBlocker = () => {
+        if (document.getElementById('movieshound-adblock-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'movieshound-adblock-styles';
+        style.innerHTML = \`
+          iframe[src*="ads"], iframe[src*="pop"], iframe[src*="doubleclick"],
+          div[class*="ad-"], div[class*="ads-"], div[id*="pop-"], div[id*="ad-banner"],
+          .popunder, .popup, #popunder, #popup {
+            display: none !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            visibility: hidden !important;
           }
-        }
-        
-        // Remove rogue iframes
-        const allIframes = document.getElementsByTagName('iframe');
-        for (let i = 0; i < allIframes.length; i++) {
-          const iframe = allIframes[i];
-          if (iframe.id !== 'player_iframe' && !iframe.src.includes('vidsrc')) {
-            iframe.style.display = 'none';
-            iframe.remove();
-          }
-        }
+        \`;
+        if (document.head) document.head.appendChild(style);
       };
 
-      clearOverlayAds();
-      setInterval(clearOverlayAds, 150);
-
-      // 3. Block click-hijacks
-      document.body.addEventListener('click', (e) => {
-        if (e.target && (e.target.tagName === 'A' || e.target.closest('a'))) {
-          const link = e.target.closest('a');
-          if (link && link.target === '_blank') {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-        }
-      }, true);
+      injectCssAdBlocker();
+      setInterval(injectCssAdBlocker, 500);
     })();
     true;
   `;
@@ -212,12 +212,21 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           <Text style={styles.headerTitle} numberOfLines={1}>
             {title.toUpperCase()}
           </Text>
-          <View style={styles.placeholder} />
+          <TouchableOpacity onPress={() => setShowLogs(!showLogs)} style={styles.logButton}>
+            <Text style={[styles.logButtonText, showLogs && { color: '#FFE500' }]}>
+              {showLogs ? '⚡ HIDE LOGS' : '⚡ LOGS'}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         {/* 16:9 YouTube-Style Top Player Container */}
         <View style={styles.topPlayerBox}>
-          {activeUrl ? (
+          {loadingStream ? (
+            <View style={styles.noPlayerBox}>
+              <ActivityIndicator size="large" color="#FF2D55" />
+              <Text style={[styles.noPlayerText, { marginTop: 10 }]}>RESOLVING FAST STREAM...</Text>
+            </View>
+          ) : activeUrl ? (
             isDirectVideoFile ? (
               <VideoView
                 style={styles.fullPlayer}
@@ -227,7 +236,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 startsPictureInPictureAutomatically
                 showsTimecodes
               />
-            ) : (
+            ) : isWebViewUrl ? (
               <WebView
                 key={activeUrl}
                 source={{ uri: activeUrl }}
@@ -238,10 +247,26 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 mediaPlaybackRequiresUserAction={false}
                 injectedJavaScript={blockAdsJS}
               />
+            ) : (
+              <View style={styles.noPlayerBox}>
+                <Text style={styles.noPlayerText}>PREPARING STREAM...</Text>
+              </View>
             )
           ) : (
             <View style={styles.noPlayerBox}>
-              <Text style={styles.noPlayerText}>STREAM LOADING...</Text>
+              <Text style={styles.noPlayerText}>NO DIRECT STREAM. SELECT SERVER BELOW.</Text>
+            </View>
+          )}
+
+          {/* On-Screen Live Debug Console Overlay */}
+          {showLogs && (
+            <View style={styles.debugOverlay}>
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={true}>
+                <Text style={styles.debugTitle}>--- LIVE STREAM DEBUG CONSOLE ---</Text>
+                {debugLogs.map((logLine, idx) => (
+                  <Text key={`log-${idx}`} style={styles.debugText}>{logLine}</Text>
+                ))}
+              </ScrollView>
             </View>
           )}
         </View>
@@ -302,11 +327,11 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
                   {[1, 2, 3, 4, 5].map((idx) => {
                     let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (MOVIEBOX FAST MP4)';
+                    if (idx === 1) label = 'SERVER 1 (MOVIEBOX MP4)';
                     if (idx === 2) label = 'SERVER 2 (TORRENTIO HLS)';
-                    if (idx === 3) label = 'SERVER 3 (SUPER VIP)';
-                    if (idx === 4) label = 'SERVER 4 (VIDSRC 2.RU)';
-                    if (idx === 5) label = 'SERVER 5 (ANYEMBED)';
+                    if (idx === 3) label = 'SERVER 3 (SUPEREMBED SIMPLE)';
+                    if (idx === 4) label = 'SERVER 4 (SUPEREMBED VIP)';
+                    if (idx === 5) label = 'SERVER 5 (VIDSRC CC)';
                     return (
                       <TouchableOpacity
                         key={`server-${idx}`}
@@ -494,6 +519,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     letterSpacing: 1,
   },
+  logButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  logButtonText: {
+    color: '#00FF88',
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    letterSpacing: 0.5,
+  },
   placeholder: {
     width: 36,
   },
@@ -503,6 +540,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    position: 'relative',
   },
   fullPlayer: {
     width: '100%',
@@ -518,6 +556,30 @@ const styles = StyleSheet.create({
     fontFamily: 'LetteraMono',
     fontSize: 11,
     letterSpacing: 1,
+  },
+  debugOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(10, 10, 12, 0.92)',
+    padding: 10,
+    zIndex: 9999,
+  },
+  debugTitle: {
+    color: '#FF2D55',
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  debugText: {
+    color: '#00FF88',
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    lineHeight: 14,
+    marginBottom: 4,
   },
   scrollDetailsContent: {
     padding: 16,
