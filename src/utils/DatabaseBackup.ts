@@ -1,5 +1,4 @@
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { Share } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getUserLists, saveUserLists, UserListsData } from './userListsStorage';
 import { getTasteProfile, saveTasteProfile, TasteProfile } from './TasteEngine';
@@ -12,7 +11,7 @@ export interface DatabaseBackupSchema {
   settings: Record<string, any>;
 }
 
-export const exportDatabaseToJson = async (): Promise<{ success: boolean; filePath?: string; error?: string }> => {
+export const exportDatabaseToJson = async (): Promise<{ success: boolean; jsonString?: string; error?: string }> => {
   try {
     const userLists = await getUserLists();
     const tasteProfile = await getTasteProfile();
@@ -34,21 +33,14 @@ export const exportDatabaseToJson = async (): Promise<{ success: boolean; filePa
       },
     };
 
-    const fileName = `movieshound_backup_${new Date().toISOString().slice(0, 10)}.json`;
-    const docDir = (FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory || '';
-    const filePath = `${docDir}${fileName}`;
+    const jsonString = JSON.stringify(backupData, null, 2);
 
-    await FileSystem.writeAsStringAsync(filePath, JSON.stringify(backupData, null, 2));
+    await Share.share({
+      title: 'MoviesHound Database Backup JSON',
+      message: jsonString,
+    });
 
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(filePath, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export MoviesHound Database Backup',
-        UTI: 'public.json',
-      });
-    }
-
-    return { success: true, filePath };
+    return { success: true, jsonString };
   } catch (e: any) {
     return { success: false, error: e.message || 'Export failed' };
   }

@@ -9,14 +9,14 @@ import {
   StatusBar,
   Image,
   Alert,
-  ActivityIndicator
+  ActivityIndicator,
+  Modal,
+  TextInput
 } from 'react-native';
 import { getUserLists, UserListsData } from '../utils/userListsStorage';
 import { exportDatabaseToJson, importDatabaseFromJson } from '../utils/DatabaseBackup';
 import { TMDBMediaItem } from '../utils/tmdb';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
 
 export const MeScreen: React.FC = () => {
   const [userLists, setUserLists] = useState<UserListsData>({
@@ -31,6 +31,10 @@ export const MeScreen: React.FC = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
 
+  // Import Modal State
+  const [importModalVisible, setImportModalVisible] = useState(false);
+  const [importJsonText, setImportJsonText] = useState('');
+
   useEffect(() => {
     loadLists();
   }, []);
@@ -44,37 +48,21 @@ export const MeScreen: React.FC = () => {
     setBackingUp(true);
     const res = await exportDatabaseToJson();
     setBackingUp(false);
-    if (res.success) {
-      Alert.alert('Backup Exported!', 'Your MoviesHound database was exported successfully.');
-    } else {
-      Alert.alert('Export Failed', res.error || 'Could not export backup.');
-    }
   };
 
-  const handleImport = async () => {
-    try {
-      const pickerRes = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
-        copyToCacheDirectory: true,
-      });
+  const handleImportSubmit = async () => {
+    if (!importJsonText.trim()) return;
+    setBackingUp(true);
+    const res = await importDatabaseFromJson(importJsonText);
+    setBackingUp(false);
 
-      if (!pickerRes.canceled && pickerRes.assets && pickerRes.assets.length > 0) {
-        setBackingUp(true);
-        const uri = pickerRes.assets[0].uri;
-        const jsonContent = await FileSystem.readAsStringAsync(uri);
-        const res = await importDatabaseFromJson(jsonContent);
-        setBackingUp(false);
-
-        if (res.success) {
-          Alert.alert('Import Successful!', res.message || 'Database restored.');
-          loadLists();
-        } else {
-          Alert.alert('Import Failed', res.error || 'Invalid backup file.');
-        }
-      }
-    } catch (e: any) {
-      setBackingUp(false);
-      Alert.alert('Error', e.message || 'Failed to select backup file.');
+    if (res.success) {
+      Alert.alert('Import Successful!', res.message || 'Database restored.');
+      setImportModalVisible(false);
+      setImportJsonText('');
+      loadLists();
+    } else {
+      Alert.alert('Import Failed', res.error || 'Invalid JSON format.');
     }
   };
 
@@ -128,12 +116,61 @@ export const MeScreen: React.FC = () => {
                 <Text style={styles.exportBtnTxt}>📤 EXPORT JSON</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.importBtn} onPress={handleImport}>
+              <TouchableOpacity style={styles.importBtn} onPress={() => setImportModalVisible(true)}>
                 <Text style={styles.importBtnTxt}>📥 IMPORT JSON</Text>
               </TouchableOpacity>
             </View>
           )}
         </View>
+
+        {/* Import JSON Modal */}
+        <Modal visible={importModalVisible} transparent animationType="fade" onRequestClose={() => setImportModalVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.85)', justifyContent: 'center', padding: 20 }}>
+            <View style={{ backgroundColor: '#141418', borderRadius: 12, padding: 20, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)' }}>
+              <Text style={{ fontFamily: 'Ndot57', fontSize: 13, color: '#FFFFFF', marginBottom: 8 }}>📥 RESTORE JSON DATABASE</Text>
+              <Text style={{ fontFamily: 'LetteraMono', fontSize: 10, color: 'rgba(255, 255, 255, 0.6)', marginBottom: 12 }}>
+                Paste your exported MoviesHound JSON backup text below to restore your 5 lists and settings:
+              </Text>
+
+              <TextInput
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(255, 255, 255, 0.15)',
+                  borderRadius: 8,
+                  padding: 12,
+                  color: '#FFFFFF',
+                  fontFamily: 'LetteraMono',
+                  fontSize: 10,
+                  height: 120,
+                  textAlignVertical: 'top',
+                  marginBottom: 16
+                }}
+                multiline
+                placeholder="Paste backup JSON string here..."
+                placeholderTextColor="rgba(255, 255, 255, 0.3)"
+                value={importJsonText}
+                onChangeText={setImportJsonText}
+              />
+
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity
+                  style={{ flex: 1, paddingVertical: 12, backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: 6, alignItems: 'center' }}
+                  onPress={() => setImportModalVisible(false)}
+                >
+                  <Text style={{ fontFamily: 'Ndot57', fontSize: 10, color: '#FFFFFF' }}>CANCEL</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{ flex: 1, paddingVertical: 12, backgroundColor: '#FF2D55', borderRadius: 6, alignItems: 'center' }}
+                  onPress={handleImportSubmit}
+                >
+                  <Text style={{ fontFamily: 'Ndot57', fontSize: 10, color: '#FFFFFF' }}>RESTORE</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         {/* 5-List Selector Row */}
         <Text style={styles.sectionHeading}>YOUR SAVED LISTS</Text>
