@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { SearchResult, parseHTML } from '../utils/parser';
 import { resolveAllDomains } from '../utils/resolver';
+import { resolveFzMoviesStream } from '../utils/fzmoviesResolver';
 
 interface DownloaderScreenProps {
   initialSearchQuery?: string;
@@ -51,6 +52,29 @@ export default function DownloaderScreen({ initialSearchQuery = '' }: Downloader
     setResults([]);
     setStatusLog([]);
     addLog(`Initiating multi-source scrape for: "${q}"`);
+
+    // Run FzMovies Direct 480p MP4 scraper worker
+    addLog('Worker [FAST 480P MP4] searching FzMovies engine...');
+    resolveFzMoviesStream(q)
+      .then((fzRes) => {
+        if (fzRes && fzRes.url) {
+          addLog(`Worker [FAST 480P MP4] extracted direct link: (${fzRes.connections} connections)`);
+          setResults((prev) => [
+            {
+              title: `${q} - ${fzRes.qualityLabel}`,
+              link: fzRes.url,
+              siteName: 'FAST 480P MP4',
+              category: 'Movie'
+            },
+            ...prev
+          ]);
+        } else {
+          addLog('Worker [FAST 480P MP4] returned no direct MP4 link');
+        }
+      })
+      .catch((e) => {
+        addLog(`Worker [FAST 480P MP4] ERR: ${e.message}`);
+      });
 
     try {
       addLog('Resolving mirror domain manifests...');

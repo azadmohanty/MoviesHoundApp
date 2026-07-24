@@ -94,3 +94,15 @@ To compile a direct, standalone `.apk` installer without using Expo Go:
 1. Install EAS CLI: `npm install -g eas-cli`
 2. Create account/login: `eas login`
 3. Execute compile: `eas build --platform android --profile preview`
+
+### 4. ADB Reverse & Expo Dev Client Testing (USB Debugging)
+
+To test directly on a connected physical Android device or emulator over USB debugging with a **1-step command**:
+
+```cmd
+npm run dev
+```
+*(This automatically runs `adb reverse tcp:8081 tcp:8081` and starts the Metro server `npx expo start --dev-client --clear`)*
+
+*(Or use `npx expo start --clear` for standard Metro bundler)*
+

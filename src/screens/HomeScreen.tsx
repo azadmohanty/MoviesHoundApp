@@ -47,6 +47,14 @@ import {
   TMDB_GENRES,
   searchTMDB
 } from '../utils/tmdb';
+import {
+  getList,
+  toggleListItem,
+  STORAGE_KEYS,
+  subscribeStorageChanges,
+  runLegacyMigrationIfNeeded,
+} from '../utils/DatabaseStorage';
+import { getCachedFeed, saveCachedFeed } from '../utils/ContentCache';
 import { getTasteProfile, rankItemsByTaste } from '../utils/TasteEngine';
 import {
   getTrendingAnime,
@@ -178,6 +186,11 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   };
   const [searchMode, setSearchMode] = useState<'movies' | 'downloads'>('movies');
   const [isSearchActive, setIsSearchActive] = useState(false);
+  const heroScrollRef = useRef<ScrollView>(null);
+  const [currentBackdrop, setCurrentBackdrop] = useState<string | null>(null);
+  const [nextBackdrop, setNextBackdrop] = useState<string | null>(null);
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const [isUserInteracting, setIsUserInteracting] = useState(false);
   const [exploreFilterVisible, setExploreFilterVisible] = useState(false);
   const toggleAnim = useRef(new Animated.Value(0)).current;
 
@@ -214,40 +227,45 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
   // Initialize
   useEffect(() => {
-    loadSettings();
+    runLegacyMigrationIfNeeded().then(() => {
+      loadSettingsAndHistory();
+    });
     loadDomains();
+
+    // Subscribe to storage changes for real-time cross-screen sync
+    const unsubscribe = subscribeStorageChanges(() => {
+      loadSettingsAndHistory();
+    });
+    return () => unsubscribe();
   }, []);
 
-  const loadSettings = async () => {
+  const loadSettingsAndHistory = async () => {
     try {
-      let key = await AsyncStorage.getItem('@movieshound_tmdb_key') || '';
-      if (!key || key.trim() === '') {
-        key = process.env.EXPO_PUBLIC_TMDB_API_KEY || '';
+      let keyStr = await AsyncStorage.getItem(STORAGE_KEYS.TMDB_KEY);
+      if (!keyStr || keyStr.trim() === '') {
+        keyStr = process.env.EXPO_PUBLIC_TMDB_API_KEY || '';
       }
-      const proxy = await AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled') === 'true';
-      const api = await AsyncStorage.getItem('@movieshound_tmdb_proxy_api') || '';
-      const img = await AsyncStorage.getItem('@movieshound_tmdb_proxy_image') || '';
-      const accent = await AsyncStorage.getItem('@movieshound_accent_color') || '#FF2D55';
-      
-      setTmdbKey(key);
+      const proxy = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_ENABLED) === 'true';
+      const api = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_API) || '';
+      const img = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_IMAGE) || '';
+      const accent = await AsyncStorage.getItem(STORAGE_KEYS.ACCENT_COLOR) || '#FF2D55';
+
+      setTmdbKey(keyStr || '');
       setProxyEnabled(proxy);
       setCustomApi(api);
       setCustomImage(img);
       setAccentColor(accent);
 
-      const listRaw = await AsyncStorage.getItem('@movieshound_watchlist');
-      if (listRaw) setWatchlist(JSON.parse(listRaw));
+      const wl = await getList(STORAGE_KEYS.WATCHLIST);
+      setWatchlist(wl);
 
-      const watchedRaw = await AsyncStorage.getItem('@movieshound_watched_list');
-      if (watchedRaw) setWatchedList(JSON.parse(watchedRaw));
+      const wt = await getList(STORAGE_KEYS.WATCHED);
+      setWatchedList(wt.map(i => ({ id: i.id, type: i.mediaType })));
 
-      const histTMDBRaw = await AsyncStorage.getItem('@movieshound_history_clicks_tmdb');
+      const histTMDBRaw = await AsyncStorage.getItem(STORAGE_KEYS.HISTORY);
       if (histTMDBRaw) setClickHistoryTMDB(JSON.parse(histTMDBRaw));
 
-      const histAnimeRaw = await AsyncStorage.getItem('@movieshound_history_clicks_anilist');
-      if (histAnimeRaw) setClickHistoryAnime(JSON.parse(histAnimeRaw));
-
-      const recentRaw = await AsyncStorage.getItem('@movieshound_recent_searches');
+      const recentRaw = await AsyncStorage.getItem(STORAGE_KEYS.RECENT_SEARCHES);
       if (recentRaw) setRecentSearches(JSON.parse(recentRaw));
     } catch (e) {
       console.warn('Failed to load settings from storage:', e);
@@ -265,17 +283,41 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   }, [currentTab, exploreType, selectedGenre, selectedYear, selectedRating]);
 
   useEffect(() => {
-    if (trendingHollywood.length > 0) {
-      const interval = setInterval(() => {
-        setHeroIndex(prev => (prev + 1) % Math.min(trendingHollywood.length, 5));
-      }, 8000);
-      return () => clearInterval(interval);
-    }
-  }, [trendingHollywood]);
+    if (trendingHollywood.length === 0 || isSearchActive || subTab !== 'for_you' || isUserInteracting) return;
+
+    const interval = setInterval(() => {
+      setHeroIndex(prevIndex => {
+        const nextIndex = (prevIndex + 1) % Math.min(trendingHollywood.length, 5);
+        if (heroScrollRef.current) {
+          heroScrollRef.current.scrollTo({ x: nextIndex * screenWidth, animated: true });
+        }
+        return nextIndex;
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [trendingHollywood, screenWidth, isSearchActive, subTab, isUserInteracting]);
 
   useEffect(() => {
-    if (trendingHollywood.length > 0) {
-      setHeroMedia(trendingHollywood[heroIndex]);
+    if (trendingHollywood.length > 0 && trendingHollywood[heroIndex]) {
+      const activeItem = trendingHollywood[heroIndex];
+      setHeroMedia(activeItem);
+      const newUrl = activeItem.backdropUrl || activeItem.posterUrl;
+      if (newUrl) {
+        if (!currentBackdrop) {
+          setCurrentBackdrop(newUrl);
+        } else if (newUrl !== currentBackdrop && newUrl !== nextBackdrop) {
+          setNextBackdrop(newUrl);
+          fadeAnim.setValue(0);
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 400,
+            useNativeDriver: true,
+          }).start(() => {
+            setCurrentBackdrop(newUrl);
+          });
+        }
+      }
     }
   }, [heroIndex, trendingHollywood]);
 
@@ -301,26 +343,52 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
   const loadFeeds = async () => {
     try {
-      setFeedsLoading(true);
+      // 1. Stale-While-Revalidate: Load cached feeds instantly if available (< 50ms startup)
+      const [cachedForYou, cachedHollywood, cachedTV, cachedBolly, cachedAnime] = await Promise.all([
+        getCachedFeed<any[]>('forYou'),
+        getCachedFeed<any[]>('trendingHollywood'),
+        getCachedFeed<any[]>('trendingTV'),
+        getCachedFeed<any[]>('bollywood'),
+        getCachedFeed<any[]>('trendingAnime'),
+      ]);
+
+      if (cachedHollywood || cachedForYou) {
+        if (cachedForYou) setForYouFeed(cachedForYou);
+        if (cachedHollywood) setTrendingHollywood(cachedHollywood);
+        if (cachedTV) setTrendingTV(cachedTV);
+        if (cachedBolly) setBollywoodHits(cachedBolly);
+        if (cachedAnime) setTrendingAnime(cachedAnime);
+        if (cachedForYou && cachedForYou.length > 0) setHeroMedia(cachedForYou[0]);
+        setFeedsLoading(false); // Hide skeletons instantly!
+      } else {
+        setFeedsLoading(true);
+      }
+
+      // 2. Fetch fresh data in background
       const config = await getTMDBConfig();
       const profile = await getTasteProfile();
-      
+
       const animeTrends = await getTrendingAnime();
       setTrendingAnime(animeTrends);
+      saveCachedFeed('trendingAnime', animeTrends);
 
       if (config.apiKey) {
         try {
           const hollywood = await getTrendingMovies();
           setTrendingHollywood(hollywood);
+          saveCachedFeed('trendingHollywood', hollywood);
 
           const tvShows = await getTrendingTVShows();
           setTrendingTV(tvShows);
+          saveCachedFeed('trendingTV', tvShows);
 
           const bollywood = await getBollywoodMovies();
           setBollywoodHits(bollywood);
+          saveCachedFeed('bollywood', bollywood);
 
           const rankedTMDB = rankItemsByTaste([...hollywood, ...tvShows, ...bollywood], profile);
           setForYouFeed(rankedTMDB);
+          saveCachedFeed('forYou', rankedTMDB);
 
           if (rankedTMDB.length > 0) {
             setHeroMedia(rankedTMDB[0]);
@@ -331,10 +399,12 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
           console.warn('Failed to fetch TMDB feeds:', tmdbErr);
           const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
           setForYouFeed(personalAnime);
+          saveCachedFeed('forYou', personalAnime);
         }
       } else {
         const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
         setForYouFeed(personalAnime);
+        saveCachedFeed('forYou', personalAnime);
       }
     } catch (e) {
       console.warn('Error loading recommendations feeds:', e);
@@ -381,18 +451,19 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   };
 
   // Watchlist Actions
-  const toggleWatchlist = async (item: WatchlistItem) => {
+  const toggleWatchlist = async (item: any) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     try {
-      let list = [...watchlist];
-      const exists = list.some(i => i.id === item.id && i.mediaType === item.mediaType);
-      if (exists) {
-        list = list.filter(i => !(i.id === item.id && i.mediaType === item.mediaType));
-      } else {
-        list.push(item);
-      }
-      await AsyncStorage.setItem('@movieshound_watchlist', JSON.stringify(list));
-      setWatchlist(list);
+      await toggleListItem(STORAGE_KEYS.WATCHLIST, {
+        id: item.id,
+        title: item.title,
+        posterUrl: item.posterUrl,
+        mediaType: item.mediaType || 'movie',
+        rating: item.rating,
+        releaseDate: item.releaseDate
+      });
+      const updated = await getList(STORAGE_KEYS.WATCHLIST);
+      setWatchlist(updated);
     } catch (e) {
       console.warn('Failed to toggle watchlist:', e);
     }
@@ -402,21 +473,20 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const toggleWatched = async (id: number, type: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     try {
-      let list = [...watchedList];
-      const exists = list.some(i => i.id === id && i.type === type);
-      if (exists) {
-        list = list.filter(i => !(i.id === id && i.type === type));
-      } else {
-        list.push({ id, type });
-      }
-      await AsyncStorage.setItem('@movieshound_watched_list', JSON.stringify(list));
-      setWatchedList(list);
+      await toggleListItem(STORAGE_KEYS.WATCHED, {
+        id,
+        title: 'Watched Item',
+        posterUrl: '',
+        mediaType: (type as 'movie' | 'tv' | 'anime') || 'movie'
+      });
+      const updated = await getList(STORAGE_KEYS.WATCHED);
+      setWatchedList(updated.map(i => ({ id: i.id, type: i.mediaType })));
     } catch (e) {
       console.warn('Failed to toggle watched:', e);
     }
   };
 
-  // Click Tracking Actions
+  // Click Tracking Actions (Silently updates history without triggering full page refresh)
   const trackMediaClick = async (id: number, mediaType: 'movie' | 'tv' | 'anime') => {
     try {
       if (mediaType === 'anime') {
@@ -429,32 +499,23 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         await AsyncStorage.setItem('@movieshound_history_clicks_tmdb', JSON.stringify(history));
         setClickHistoryTMDB(history);
       }
-      loadFeeds();
     } catch (e) {
       console.warn('Failed to track click:', e);
     }
   };
 
-  // Stream Trigger Action (Launches YouTube-Style Player)
-  const handleWatchStream = async (item: any) => {
-    try {
-      setResolvingStream(true);
-      setStatusMessage('Resolving Stream URL...');
-      const streamRes = await resolveStreamUrl(item.id, item.mediaType || 'movie');
-      if (streamRes) {
-        setActiveStreamUrl(streamRes.streamUrl);
-        setActiveStreamTitle(item.title);
-        setActiveMediaItem(item);
-        setPlayerVisible(true);
-      } else {
-        setStatusMessage('Stream unavailable. Fallback to direct downloads.');
-      }
-    } catch (e) {
-      console.warn('Error launching stream:', e);
-    } finally {
-      setResolvingStream(false);
-      setStatusMessage('');
-    }
+  // Stream Trigger Action (Instantly Launches Details & Stream Player Modal)
+  const handleWatchStream = (item: any) => {
+    if (!item) return;
+    const mediaType = item.mediaType || (item.rating && item.rating > 10 ? 'anime' : 'movie');
+    const fullItem = {
+      ...item,
+      mediaType
+    };
+    setActiveMediaItem(fullItem);
+    setActiveStreamTitle(item.title || '');
+    setActiveStreamUrl(null);
+    setPlayerVisible(true);
   };
 
   // Artist Portfolio Action
@@ -713,32 +774,36 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <Image source={{ uri: item.posterUrl }} style={[styles.feedPoster, { width: cardWidth, height: cardHeight }]} />
           </TouchableOpacity>
           
-          {/* Watchlist Star Button (Top Right) */}
+          {/* Bookmark Glass Circle Button (Top Right) */}
           <TouchableOpacity
             style={styles.feedCardBookmark}
             onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: type })}
+            activeOpacity={0.8}
           >
-            <Text style={[styles.bookmarkStar, isSaved && { color: accentColor }]}>
-              {isSaved ? '★' : '☆'}
-            </Text>
+            <Ionicons
+              name={isSaved ? "bookmark" : "bookmark-outline"}
+              size={13}
+              color={isSaved ? accentColor : "#FFFFFF"}
+            />
           </TouchableOpacity>
 
           {/* Watched Status Indicator (Top Left) */}
           {isWatched && (
             <View style={styles.watchedBadge}>
-              <Text style={styles.watchedCheck}>✓</Text>
+              <Ionicons name="checkmark-sharp" size={11} color="#0A0A0C" />
             </View>
           )}
 
-          {/* Download Yellow Badge (Bottom Left) */}
+          {/* Download Twin Glass Circle Button (Bottom Left) */}
           <TouchableOpacity
             style={styles.feedCardDownload}
             onPress={() => {
               trackMediaClick(item.id, type);
               handleSearchSubmitWithIMDb(item.title, type, item.id, suggestedCategory);
             }}
+            activeOpacity={0.8}
           >
-            <Text style={styles.downloadArrow}>↓</Text>
+            <Ionicons name="download-outline" size={13} color="#FFE500" />
           </TouchableOpacity>
         </View>
 
@@ -761,18 +826,26 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* Dynamic Ambient Blurred Poster Backdrop (Swipe Screen Style) */}
+      {/* Dual-Layer Animated Cross-Fade Ambient Backdrop (Swipe Screen Style) */}
       <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
-        {heroMedia && (
+        {currentBackdrop && (
           <Image
-            source={{ uri: heroMedia.backdropUrl || heroMedia.posterUrl }}
+            source={{ uri: currentBackdrop }}
             style={{ width: '100%', height: '100%', opacity: 0.85 }}
             blurRadius={28}
             resizeMode="cover"
           />
         )}
+        {nextBackdrop && (
+          <Animated.Image
+            source={{ uri: nextBackdrop }}
+            style={{ width: '100%', height: '100%', position: 'absolute', opacity: fadeAnim }}
+            blurRadius={28}
+            resizeMode="cover"
+          />
+        )}
         <LinearGradient
-          colors={['rgba(15, 12, 24, 0.2)', 'rgba(10, 10, 12, 0.72)', '#0A0A0C']}
+          colors={['rgba(15, 12, 24, 0.1)', 'rgba(12, 10, 18, 0.35)', 'rgba(10, 10, 14, 0.65)']}
           style={StyleSheet.absoluteFillObject}
         />
       </View>
@@ -959,42 +1032,83 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         ) : subTab === 'for_you' ? (
           /* SUBTAB 1: FOR YOU (No Floating Filter Pill) */
           <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
-            {/* Apple TV+ Full-Bleed 16:9 Hero Spotlight Carousel */}
-            {heroMedia && (
-              <View style={styles.heroContainer}>
-                <Image source={{ uri: heroMedia.backdropUrl || heroMedia.posterUrl }} style={styles.heroImage} />
-                <LinearGradient
-                  colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
-                  style={styles.heroGradient}
-                />
-                <View style={styles.heroContent}>
-                  <Text style={styles.heroTag}>SPOTLIGHT #1 PICK</Text>
-                  <Text style={styles.heroTitle}>{heroMedia.title.toUpperCase()}</Text>
-                  <Text style={styles.heroSub}>
-                    ★ {heroMedia.rating ? heroMedia.rating.toFixed(1) : '8.5'} • {heroMedia.releaseDate || '2026'}
-                  </Text>
-                  <View style={styles.heroActionRow}>
-                    <TouchableOpacity
-                      style={[styles.heroPlayButton, { backgroundColor: accentColor }]}
-                      onPress={() => handleWatchStream(heroMedia)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.heroPlayText}>▶ STREAM NOW</Text>
-                    </TouchableOpacity>
+            {/* Apple TV+ Full-Bleed 16:9 Swipeable Hero Spotlight Carousel */}
+            {feedsLoading || trendingHollywood.length === 0 ? (
+              <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+                <SkeletonCard width={screenWidth - 40} height={220} borderRadius={12} />
+              </View>
+            ) : (
+              <View style={styles.heroWrapperContainer}>
+                <ScrollView
+                  ref={heroScrollRef}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  scrollEventThrottle={16}
+                  onScrollBeginDrag={() => setIsUserInteracting(true)}
+                  onScrollEndDrag={() => setIsUserInteracting(false)}
+                  onScroll={(e) => {
+                    const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+                    if (idx !== heroIndex && idx >= 0 && idx < 5 && trendingHollywood[idx]) {
+                      setHeroIndex(idx);
+                      setHeroMedia(trendingHollywood[idx]);
+                    }
+                  }}
+                  onMomentumScrollEnd={(e) => {
+                    const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+                    if (idx >= 0 && idx < 5 && trendingHollywood[idx]) {
+                      setHeroIndex(idx);
+                      setHeroMedia(trendingHollywood[idx]);
+                    }
+                  }}
+                  style={{ width: screenWidth, height: 220 }}
+                >
+                  {trendingHollywood.slice(0, 5).map((item, idx) => {
+                    const isSaved = watchlist.some(i => i.id === item.id);
+                    return (
+                      <TouchableOpacity
+                        key={`hero-slide-${item.id}-${idx}`}
+                        style={{ width: screenWidth, height: 220, position: 'relative' }}
+                        onPress={() => handleWatchStream(item)}
+                        activeOpacity={0.9}
+                      >
+                        <Image source={{ uri: item.backdropUrl || item.posterUrl }} style={styles.heroImage} />
+                        <LinearGradient
+                          colors={['transparent', 'rgba(10,10,14,0.3)', 'rgba(10,10,14,0.6)']}
+                          style={styles.heroGradient}
+                        />
+                        <View style={styles.heroContent}>
+                          <Text style={styles.heroTag}>SPOTLIGHT #{idx + 1} PICK</Text>
+                          <Text style={styles.heroTitle}>{item.title.toUpperCase()}</Text>
+                          <Text style={styles.heroSub}>
+                            ★ {item.rating ? item.rating.toFixed(1) : '8.5'} • {item.releaseDate || '2026'}
+                          </Text>
+                          <View style={styles.heroActionRow}>
+                            <TouchableOpacity
+                              style={[styles.heroPlayButton, { backgroundColor: accentColor }]}
+                              onPress={() => handleWatchStream(item)}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.heroPlayText}>▶ STREAM NOW</Text>
+                            </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={styles.heroBookmarkBtn}
-                      onPress={() => toggleWatchlist({ id: heroMedia.id, title: heroMedia.title, posterUrl: heroMedia.posterUrl, mediaType: heroMedia.mediaType || 'movie' })}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons
-                        name={watchlist.some(i => i.id === heroMedia.id) ? "bookmark" : "bookmark-outline"}
-                        size={18}
-                        color="#FFF"
-                      />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                            <TouchableOpacity
+                              style={styles.heroBookmarkBtn}
+                              onPress={() => toggleWatchlist({ id: item.id, title: item.title, posterUrl: item.posterUrl, mediaType: item.mediaType || 'movie' })}
+                              activeOpacity={0.8}
+                            >
+                              <Ionicons
+                                name={isSaved ? "bookmark" : "bookmark-outline"}
+                                size={18}
+                                color="#FFF"
+                              />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
               </View>
             )}
 
@@ -1015,13 +1129,15 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>BASED ON YOUR SWIPES & TASTE</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                {forYouFeed.length > 0 ? (
+                {feedsLoading || forYouFeed.length === 0 ? (
+                  [1, 2, 3, 4].map(idx => (
+                    <SkeletonCard key={`skel-foryou-${idx}`} width={cardWidth} height={cardHeight} borderRadius={4} />
+                  ))
+                ) : (
                   forYouFeed.map(item => {
                     const type = 'rating' in item && item.rating > 10 ? 'anime' : ('mediaType' in item ? item.mediaType : 'movie');
                     return renderFeedCard(item, type, 'all');
                   })
-                ) : (
-                  <Text style={styles.laneEmptyText}>NO HISTORY YET. SWIPE CARDS OR WATCH MEDIA TO POPULATE.</Text>
                 )}
               </ScrollView>
             </View>
@@ -1030,7 +1146,13 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>TRENDING HOLLYWOOD MOVIES</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                {trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))}
+                {feedsLoading || trendingHollywood.length === 0 ? (
+                  [1, 2, 3, 4].map(idx => (
+                    <SkeletonCard key={`skel-holly-${idx}`} width={cardWidth} height={cardHeight} borderRadius={4} />
+                  ))
+                ) : (
+                  trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))
+                )}
               </ScrollView>
             </View>
 
@@ -1038,7 +1160,13 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>TRENDING TV SHOWS & SERIES</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                {trendingTV.map(item => renderFeedCard(item, 'tv', 'hollywood'))}
+                {feedsLoading || trendingTV.length === 0 ? (
+                  [1, 2, 3, 4].map(idx => (
+                    <SkeletonCard key={`skel-tv-${idx}`} width={cardWidth} height={cardHeight} borderRadius={4} />
+                  ))
+                ) : (
+                  trendingTV.map(item => renderFeedCard(item, 'tv', 'hollywood'))
+                )}
               </ScrollView>
             </View>
 
@@ -1046,7 +1174,13 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                {bollywoodHits.map(item => renderFeedCard(item, 'movie', 'bollywood'))}
+                {feedsLoading || bollywoodHits.length === 0 ? (
+                  [1, 2, 3, 4].map(idx => (
+                    <SkeletonCard key={`skel-bolly-${idx}`} width={cardWidth} height={cardHeight} borderRadius={4} />
+                  ))
+                ) : (
+                  bollywoodHits.map(item => renderFeedCard(item, 'movie', 'bollywood'))
+                )}
               </ScrollView>
             </View>
 
@@ -1054,7 +1188,13 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>TRENDING ANIME</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                {trendingAnime.map(item => renderFeedCard(item, 'anime', 'anime'))}
+                {feedsLoading || trendingAnime.length === 0 ? (
+                  [1, 2, 3, 4].map(idx => (
+                    <SkeletonCard key={`skel-anime-${idx}`} width={cardWidth} height={cardHeight} borderRadius={4} />
+                  ))
+                ) : (
+                  trendingAnime.map(item => renderFeedCard(item, 'anime', 'anime'))
+                )}
               </ScrollView>
             </View>
           </ScrollView>
@@ -1109,11 +1249,15 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             )}
 
             {/* 3-Column Explore Grid */}
-            {exploreLoading ? (
-              <View style={styles.skeletonGrid}>
-                {Array.from({ length: 9 }).map((_, idx) => (
-                  <SkeletonCard key={`skel-${idx}`} />
-                ))}
+            {exploreLoading || exploreMedia.length === 0 ? (
+              <View style={styles.exploreGrid}>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+                  {Array.from({ length: 9 }).map((_, idx) => (
+                    <View key={`skel-exp-${idx}`} style={{ marginBottom: 16 }}>
+                      <SkeletonCard width={cardWidth} height={cardHeight} borderRadius={4} />
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : (
               <FlatList
@@ -1807,6 +1951,31 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 16,
   },
+  heroWrapperContainer: {
+    position: 'relative',
+    width: '100%',
+    height: 230,
+    marginBottom: 10,
+  },
+  heroDotPagination: {
+    position: 'absolute',
+    bottom: 4,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    zIndex: 20,
+  },
+  heroDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  heroDotActive: {
+    width: 16,
+    backgroundColor: '#FF2D55',
+  },
   heroContainer: {
     position: 'relative',
     width: '100%',
@@ -1904,22 +2073,22 @@ const styles = StyleSheet.create({
   },
   feedCardBookmark: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    backgroundColor: 'rgba(10,10,12,0.8)',
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    top: 6,
+    right: 6,
+    backgroundColor: 'rgba(10, 10, 14, 0.82)',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 0.5,
-    borderColor: 'rgba(255,255,255,0.15)',
-    zIndex: 10
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 10,
   },
   watchedBadge: {
     position: 'absolute',
-    top: 4,
-    left: 4,
+    top: 6,
+    left: 6,
     backgroundColor: '#00FF88',
     width: 20,
     height: 20,
@@ -1935,15 +2104,17 @@ const styles = StyleSheet.create({
   },
   feedCardDownload: {
     position: 'absolute',
-    bottom: 4,
-    left: 4,
-    backgroundColor: '#FFE500',
-    width: 24,
-    height: 24,
-    borderRadius: 4,
+    bottom: 6,
+    left: 6,
+    backgroundColor: 'rgba(10, 10, 14, 0.82)',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 10
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 10,
   },
   downloadArrow: {
     fontSize: 12,

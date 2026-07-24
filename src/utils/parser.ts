@@ -47,8 +47,7 @@ export const parseHTML = (html: string, siteKey: string, category: string, baseU
           cleanHref.includes('/privacy-policy/') ||
           cleanHref === '#' ||
           cleanHref.startsWith('javascript:') ||
-          cleanText.toLowerCase().includes('how to download') ||
-          cleanText.toLowerCase() === 'how to';
+          cleanText.toLowerCase().includes('how to download')
 
         if (cleanHref && cleanText.length > 5 && !isInvalid) {
           if (insideHeading || cleanText.toLowerCase().includes('download') || cleanText.toLowerCase().includes('season')) {

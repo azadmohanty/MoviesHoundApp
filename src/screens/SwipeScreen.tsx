@@ -42,6 +42,7 @@ import SwipeCard, { SwipeDirection } from '../components/SwipeCard';
 import { SwiparrDetailSheet } from '../components/SwiparrDetailSheet';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { FilterDrawerModal, FilterOptions } from '../components/FilterDrawerModal';
+import { SkeletonCard } from '../components/SkeletonCard';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -269,7 +270,9 @@ export default function SwipeScreen() {
         /* ── Deck ── */
         <View style={styles.deckArea}>
           {loading ? (
-            <ActivityIndicator size="large" color="#FF2D55" />
+            <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+              <SkeletonCard width={SCREEN_WIDTH - 32} height={SCREEN_HEIGHT * 0.62} borderRadius={16} />
+            </View>
           ) : deckFinished ? (
             <View style={styles.emptyCenter}>
               <Ionicons name="sparkles-outline" size={52} color="#FF2D55" />
@@ -280,7 +283,9 @@ export default function SwipeScreen() {
               </TouchableOpacity>
             </View>
           ) : !currentCard ? (
-            <ActivityIndicator size="large" color="#FF2D55" />
+            <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+              <SkeletonCard width={SCREEN_WIDTH - 32} height={SCREEN_HEIGHT * 0.62} borderRadius={16} />
+            </View>
           ) : (
             <View style={styles.cardStack}>
 

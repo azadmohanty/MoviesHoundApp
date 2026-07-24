@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { STORAGE_KEYS, getList, setStorageString, flushMemoryBufferAndNotify } from './DatabaseStorage';
 
 export interface UserListsState {
   watchLater: any[];
@@ -6,11 +7,7 @@ export interface UserListsState {
   liked: any[];
   loved: any[];
   disliked: any[];
-  watchHistory: {
-    item: any;
-    progressPercent: number;
-    lastWatchedAt: string;
-  }[];
+  watchHistory: any[];
 }
 
 export interface BackupPayload {
@@ -40,12 +37,12 @@ const BACKUP_VERSION = '1.0.0';
 
 export async function createBackupPayload(): Promise<BackupPayload> {
   const [
-    watchLaterStr,
-    watchedStr,
-    likedStr,
-    lovedStr,
-    dislikedStr,
-    historyStr,
+    watchLater,
+    watched,
+    liked,
+    loved,
+    disliked,
+    watchHistory,
     searchHistoryStr,
     tmdbKey,
     proxyEnabled,
@@ -55,18 +52,18 @@ export async function createBackupPayload(): Promise<BackupPayload> {
     prefLang,
     selServer
   ] = await Promise.all([
-    AsyncStorage.getItem('@watchlist'),
-    AsyncStorage.getItem('@watched_list'),
-    AsyncStorage.getItem('@liked_list'),
-    AsyncStorage.getItem('@loved_list'),
-    AsyncStorage.getItem('@disliked_list'),
-    AsyncStorage.getItem('@watch_history'),
-    AsyncStorage.getItem('@search_history'),
-    AsyncStorage.getItem('@movieshound_tmdb_key'),
-    AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled'),
-    AsyncStorage.getItem('@movieshound_tmdb_proxy_api'),
-    AsyncStorage.getItem('@movieshound_tmdb_proxy_image'),
-    AsyncStorage.getItem('@movieshound_accent_color'),
+    getList(STORAGE_KEYS.WATCHLIST),
+    getList(STORAGE_KEYS.WATCHED),
+    getList(STORAGE_KEYS.LIKED),
+    getList(STORAGE_KEYS.LOVED),
+    getList(STORAGE_KEYS.DISLIKED),
+    getList(STORAGE_KEYS.HISTORY),
+    AsyncStorage.getItem(STORAGE_KEYS.RECENT_SEARCHES),
+    AsyncStorage.getItem(STORAGE_KEYS.TMDB_KEY),
+    AsyncStorage.getItem(STORAGE_KEYS.PROXY_ENABLED),
+    AsyncStorage.getItem(STORAGE_KEYS.PROXY_API),
+    AsyncStorage.getItem(STORAGE_KEYS.PROXY_IMAGE),
+    AsyncStorage.getItem(STORAGE_KEYS.ACCENT_COLOR),
     AsyncStorage.getItem('@preferred_language'),
     AsyncStorage.getItem('@selected_server'),
   ]);
@@ -75,13 +72,13 @@ export async function createBackupPayload(): Promise<BackupPayload> {
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
     userLists: {
-      watchLater: watchLaterStr ? JSON.parse(watchLaterStr) : [],
-      watched: watchedStr ? JSON.parse(watchedStr) : [],
-      liked: likedStr ? JSON.parse(likedStr) : [],
-      loved: lovedStr ? JSON.parse(lovedStr) : [],
-      disliked: dislikedStr ? JSON.parse(dislikedStr) : [],
+      watchLater,
+      watched,
+      liked,
+      loved,
+      disliked,
     },
-    watchHistory: historyStr ? JSON.parse(historyStr) : [],
+    watchHistory,
     searchHistory: searchHistoryStr ? JSON.parse(searchHistoryStr) : [],
     settings: {
       preferredLanguage: prefLang || 'Original',
@@ -166,37 +163,40 @@ export async function restoreBackupFromJSON(data: BackupPayload): Promise<{ succ
     }
 
     if (data.userLists.watchLater) {
-      await AsyncStorage.setItem('@watchlist', JSON.stringify(data.userLists.watchLater));
+      await AsyncStorage.setItem(STORAGE_KEYS.WATCHLIST, JSON.stringify(data.userLists.watchLater));
     }
     if (data.userLists.watched) {
-      await AsyncStorage.setItem('@watched_list', JSON.stringify(data.userLists.watched));
+      await AsyncStorage.setItem(STORAGE_KEYS.WATCHED, JSON.stringify(data.userLists.watched));
     }
     if (data.userLists.liked) {
-      await AsyncStorage.setItem('@liked_list', JSON.stringify(data.userLists.liked));
+      await AsyncStorage.setItem(STORAGE_KEYS.LIKED, JSON.stringify(data.userLists.liked));
     }
     if (data.userLists.loved) {
-      await AsyncStorage.setItem('@loved_list', JSON.stringify(data.userLists.loved));
+      await AsyncStorage.setItem(STORAGE_KEYS.LOVED, JSON.stringify(data.userLists.loved));
     }
     if (data.userLists.disliked) {
-      await AsyncStorage.setItem('@disliked_list', JSON.stringify(data.userLists.disliked));
+      await AsyncStorage.setItem(STORAGE_KEYS.DISLIKED, JSON.stringify(data.userLists.disliked));
     }
     if (data.watchHistory) {
-      await AsyncStorage.setItem('@watch_history', JSON.stringify(data.watchHistory));
+      await AsyncStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(data.watchHistory));
     }
     if (data.searchHistory) {
-      await AsyncStorage.setItem('@search_history', JSON.stringify(data.searchHistory));
+      await AsyncStorage.setItem(STORAGE_KEYS.RECENT_SEARCHES, JSON.stringify(data.searchHistory));
     }
     if (data.settings) {
       if (data.settings.tmdbApiKey !== undefined) {
-        await AsyncStorage.setItem('@movieshound_tmdb_key', data.settings.tmdbApiKey);
+        await setStorageString(STORAGE_KEYS.TMDB_KEY, data.settings.tmdbApiKey);
       }
       if (data.settings.proxyEnabled !== undefined) {
-        await AsyncStorage.setItem('@movieshound_tmdb_proxy_enabled', String(data.settings.proxyEnabled));
+        await setStorageString(STORAGE_KEYS.PROXY_ENABLED, String(data.settings.proxyEnabled));
       }
       if (data.settings.accentColor !== undefined) {
-        await AsyncStorage.setItem('@movieshound_accent_color', data.settings.accentColor);
+        await setStorageString(STORAGE_KEYS.ACCENT_COLOR, data.settings.accentColor);
       }
     }
+
+    // Flush memory buffer and notify all subscribers (MeScreen & HomeScreen update immediately)
+    flushMemoryBufferAndNotify();
 
     return { success: true, message: 'Backup restored successfully! All lists & settings updated.' };
   } catch (error: any) {

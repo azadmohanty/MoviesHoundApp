@@ -24,6 +24,15 @@ import {
   createBackupPayload,
 } from '../utils/DatabaseBackup';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
+import {
+  getList,
+  STORAGE_KEYS,
+  subscribeStorageChanges,
+  runLegacyMigrationIfNeeded,
+  setStorageString,
+  getStorageString,
+  clearVolatileCache,
+} from '../utils/DatabaseStorage';
 
 export default function MeScreen() {
   const [activeSubTab, setActiveSubTab] = useState<
@@ -63,8 +72,16 @@ export default function MeScreen() {
   const [activeMediaItem, setActiveMediaItem] = useState<any>(null);
 
   useEffect(() => {
-    loadAllUserData();
+    runLegacyMigrationIfNeeded().then(() => {
+      loadAllUserData();
+    });
     fetchDomains();
+
+    // Real-time PubSub Listener for Cross-Screen Sync
+    const unsubscribe = subscribeStorageChanges(() => {
+      loadAllUserData();
+    });
+    return () => unsubscribe();
   }, []);
 
   const fetchDomains = async () => {
@@ -90,27 +107,27 @@ export default function MeScreen() {
         api,
         accent,
       ] = await Promise.all([
-        AsyncStorage.getItem('@watchlist'),
-        AsyncStorage.getItem('@watched_list'),
-        AsyncStorage.getItem('@liked_list'),
-        AsyncStorage.getItem('@loved_list'),
-        AsyncStorage.getItem('@disliked_list'),
-        AsyncStorage.getItem('@watch_history'),
-        AsyncStorage.getItem('@movieshound_tmdb_key'),
-        AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled'),
-        AsyncStorage.getItem('@movieshound_tmdb_proxy_api'),
-        AsyncStorage.getItem('@movieshound_accent_color'),
+        getList(STORAGE_KEYS.WATCHLIST),
+        getList(STORAGE_KEYS.WATCHED),
+        getList(STORAGE_KEYS.LIKED),
+        getList(STORAGE_KEYS.LOVED),
+        getList(STORAGE_KEYS.DISLIKED),
+        getList(STORAGE_KEYS.HISTORY),
+        getStorageString(STORAGE_KEYS.TMDB_KEY),
+        getStorageString(STORAGE_KEYS.PROXY_ENABLED),
+        getStorageString(STORAGE_KEYS.PROXY_API),
+        getStorageString(STORAGE_KEYS.ACCENT_COLOR, '#FF2D55'),
       ]);
 
-      setWatchLater(wl ? JSON.parse(wl) : []);
-      setWatched(wt ? JSON.parse(wt) : []);
-      setLiked(lk ? JSON.parse(lk) : []);
-      setLoved(lv ? JSON.parse(lv) : []);
-      setDisliked(dl ? JSON.parse(dl) : []);
-      setWatchHistory(hi ? JSON.parse(hi) : []);
+      setWatchLater(wl);
+      setWatched(wt);
+      setLiked(lk);
+      setLoved(lv);
+      setDisliked(dl);
+      setWatchHistory(hi);
 
       if (key) setTmdbKey(key);
-      if (proxy) setProxyEnabled(proxy === 'true');
+      setProxyEnabled(proxy === 'true');
       if (api) setCustomApi(api);
       if (accent) setAccentColor(accent);
     } catch (e) {
@@ -120,10 +137,10 @@ export default function MeScreen() {
 
   const updateSetting = async (key: string, value: string) => {
     try {
-      await AsyncStorage.setItem(key, value);
-      if (key === '@movieshound_tmdb_key') setTmdbKey(value);
-      if (key === '@movieshound_tmdb_proxy_enabled') setProxyEnabled(value === 'true');
-      if (key === '@movieshound_accent_color') setAccentColor(value);
+      await setStorageString(key, value);
+      if (key === STORAGE_KEYS.TMDB_KEY) setTmdbKey(value);
+      if (key === STORAGE_KEYS.PROXY_ENABLED) setProxyEnabled(value === 'true');
+      if (key === STORAGE_KEYS.ACCENT_COLOR) setAccentColor(value);
     } catch (e) {
       Alert.alert('Save Error', 'Could not save setting.');
     }

@@ -185,6 +185,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       if (serverIdx === 1 || serverIdx === 2) {
         setLoadingStream(true);
         addLog(`Resolving Server ${serverIdx} stream asynchronously...`);
+        const year = mediaItem.releaseDate
+          ? String(mediaItem.releaseDate).substring(0, 4)
+          : mediaItem.firstAirDate
+          ? String(mediaItem.firstAirDate).substring(0, 4)
+          : undefined;
+        const imdbId = mediaItem.imdbId || undefined;
         const res = await resolveStreamUrl(
           mediaItem.id,
           mediaItem.mediaType || 'movie',
@@ -192,17 +198,20 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           season,
           episode,
           serverIdx,
-          lang
+          lang,
+          year,
+          imdbId
         );
 
+        addLog(`[DEBUG] resolveStreamUrl result: isNull=${res === null}, source="${res?.sourceName || 'NONE'}", streamUrl="${res?.streamUrl?.substring(0, 80) || 'NULL'}"`);
         if (res && res.streamUrl && (res.streamUrl.startsWith('http://') || res.streamUrl.startsWith('https://'))) {
-          addLog(`Server ${serverIdx} resolved successfully (${res.language || 'Original'}) -> ${res.streamUrl.substring(0, 60)}...`);
+          addLog(`Server ${serverIdx} resolved successfully (${res.sourceName}) -> ${res.streamUrl.substring(0, 60)}...`);
           setActiveUrl(res.streamUrl);
           if (res.availableLanguages && res.availableLanguages.length > 0) {
             setAvailableLanguages(res.availableLanguages);
           }
         } else {
-          addLog(`Server ${serverIdx} resolution returned no direct link. Falling back to Server 3 (SuperEmbed Simple)...`);
+          addLog(`Server ${serverIdx} resolution returned no direct link. URL was: "${res?.streamUrl || 'NULL/EMPTY'}". Falling back to Server 3...`);
           const fallbackUrl = getStreamServerUrl(3, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
           setActiveUrl(fallbackUrl);
         }
@@ -275,14 +284,44 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </View>
           ) : activeUrl ? (
             isDirectVideoFile ? (
-              <VideoView
-                style={styles.fullPlayer}
-                player={player}
-                fullscreenOptions={{ enable: true }}
-                allowsPictureInPicture
-                startsPictureInPictureAutomatically
-                showsTimecodes
-              />
+              activeUrl.includes('.mp4') ? (
+                <WebView
+                  key={activeUrl}
+                  source={{
+                    html: `
+                      <!DOCTYPE html>
+                      <html>
+                      <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                        <style>
+                          * { box-sizing: border-box; }
+                          body, html { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+                          video { width:100%; height:100%; object-fit:contain; outline:none; }
+                        </style>
+                      </head>
+                      <body>
+                        <video src="${activeUrl}" controls autoplay playsinline preload="auto" type="video/mp4"></video>
+                      </body>
+                      </html>
+                    `
+                  }}
+                  style={styles.fullPlayer}
+                  javaScriptEnabled={true}
+                  domStorageEnabled={true}
+                  allowsInlineMediaPlayback={true}
+                  mediaPlaybackRequiresUserAction={false}
+                  allowsFullscreenVideo={true}
+                />
+              ) : (
+                <VideoView
+                  style={styles.fullPlayer}
+                  player={player}
+                  fullscreenOptions={{ enable: true }}
+                  allowsPictureInPicture
+                  startsPictureInPictureAutomatically
+                  showsTimecodes
+                />
+              )
             ) : isWebViewUrl ? (
               <WebView
                 key={activeUrl}
@@ -463,12 +502,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               <View style={styles.tvSection}>
                 <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
-                  {[1, 2, 3, 4].map((idx) => {
+                  {[1, 2, 3, 4, 5].map((idx) => {
                     let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (MOVIEBOX MP4)';
-                    if (idx === 2) label = 'SERVER 2 (VIDSRC 2.RU)';
-                    if (idx === 3) label = 'SERVER 3 (SUPEREMBED)';
-                    if (idx === 4) label = 'SERVER 4 (ANYEMBED)';
+                    if (idx === 1) label = 'SERVER 1 (FAST 480P MP4)';
+                    if (idx === 2) label = 'SERVER 2 (MOVIEBOX MP4)';
+                    if (idx === 3) label = 'SERVER 3 (VIDSRC 2.RU)';
+                    if (idx === 4) label = 'SERVER 4 (SUPEREMBED)';
+                    if (idx === 5) label = 'SERVER 5 (ANYEMBED)';
                     return (
                       <TouchableOpacity
                         key={`server-${idx}`}
@@ -491,7 +531,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               </View>
 
               {/* Dynamic Audio Dub Selector for MovieBox */}
-              {selectedServer === 1 && availableLanguages.length > 1 && (
+              {selectedServer === 2 && availableLanguages.length > 1 && (
                 <View style={[styles.tvSection, { marginTop: 12 }]}>
                   <Text style={styles.sectionHeading}>SELECT AUDIO TRACK / DUB</Text>
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>

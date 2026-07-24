@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TMDBMediaItem } from './tmdb';
+import { toggleListItem, STORAGE_KEYS, getList } from './DatabaseStorage';
 
 export interface TasteProfile {
   genreWeights: Record<number, number>;
@@ -11,12 +12,22 @@ export interface TasteProfile {
 }
 
 const TASTE_KEY = '@user_taste_profile';
-const PERSISTED_LIKES_KEY = '@movie_tinder_liked_items';
 
 export async function getPersistedLikedItems(): Promise<TMDBMediaItem[]> {
   try {
-    const raw = await AsyncStorage.getItem(PERSISTED_LIKES_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const list = await getList(STORAGE_KEYS.LIKED);
+    return list.map(i => ({
+      id: i.id,
+      title: i.title,
+      posterUrl: i.posterUrl,
+      mediaType: (i.mediaType === 'tv' ? 'tv' : 'movie') as 'movie' | 'tv',
+      rating: i.rating || 0,
+      releaseDate: i.releaseDate || '',
+      overview: '',
+      backdropUrl: '',
+      voteCount: 0,
+      voteCountFormatted: '0'
+    }));
   } catch {
     return [];
   }
@@ -24,7 +35,7 @@ export async function getPersistedLikedItems(): Promise<TMDBMediaItem[]> {
 
 export async function savePersistedLikedItems(items: TMDBMediaItem[]): Promise<void> {
   try {
-    await AsyncStorage.setItem(PERSISTED_LIKES_KEY, JSON.stringify(items));
+    await AsyncStorage.setItem(STORAGE_KEYS.LIKED, JSON.stringify(items));
   } catch (err) {
     console.error('Failed to persist liked items:', err);
   }
@@ -83,7 +94,7 @@ export async function recordUserAction(
     profile.genreWeights[gId] = current + weightDelta;
   });
 
-  // Track ID in lists
+  // Track ID in profile lists
   if (action === 'loved' && !profile.lovedIds.includes(item.id)) {
     profile.lovedIds.push(item.id);
   } else if (action === 'liked' && !profile.likedIds.includes(item.id)) {
@@ -92,22 +103,29 @@ export async function recordUserAction(
     profile.dislikedIds.push(item.id);
   }
 
-  // Persist full item for offline recovery
-  if (action === 'loved' || action === 'liked') {
-    const existingLikes = await getPersistedLikedItems();
-    if (!existingLikes.some(i => i.id === item.id)) {
-      await savePersistedLikedItems([item, ...existingLikes]);
-    }
+  // Sync directly into DatabaseStorage user lists
+  const storageItem = {
+    id: item.id,
+    title: item.title,
+    posterUrl: item.posterUrl,
+    mediaType: item.mediaType || 'movie',
+    rating: item.rating,
+    releaseDate: item.releaseDate
+  };
+
+  if (action === 'loved') {
+    await toggleListItem(STORAGE_KEYS.LOVED, storageItem);
+  } else if (action === 'liked') {
+    await toggleListItem(STORAGE_KEYS.LIKED, storageItem);
+  } else if (action === 'disliked') {
+    await toggleListItem(STORAGE_KEYS.DISLIKED, storageItem);
   }
 
   await saveTasteProfile(profile);
 }
 
 /**
- * Record implicit video playback behavior:
- * - 5 to 10 mins: +0.5 interest boost
- * - >75% completion: +1.5 completion boost
- * - <1 min: -0.2 early drop-off penalty
+ * Record implicit video playback behavior
  */
 export async function recordPlaybackDuration(
   item: TMDBMediaItem,
