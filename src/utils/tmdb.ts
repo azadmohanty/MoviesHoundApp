@@ -303,6 +303,64 @@ export const searchTMDB = async (query: string): Promise<TMDBMediaItem[]> => {
   }
 };
 
+export const discoverMediaWithFilters = async (filters: {
+  mediaType: 'movie' | 'tv' | 'anime' | 'both';
+  selectedLanguage?: string;
+  selectedYear?: string;
+  selectedGenres?: number[];
+  minRating?: number;
+  sortBy?: string;
+}): Promise<TMDBMediaItem[]> => {
+  try {
+    const config = await getTMDBConfig();
+    const endpointType = filters.mediaType === 'tv' || filters.mediaType === 'anime' ? 'tv' : 'movie';
+
+    const params: Record<string, string> = {
+      sort_by: filters.sortBy || 'popularity.desc',
+      'vote_count.gte': '20',
+    };
+
+    if (filters.minRating && filters.minRating > 0) {
+      params['vote_average.gte'] = filters.minRating.toString();
+    }
+
+    if (filters.selectedLanguage && filters.selectedLanguage !== 'all') {
+      params['with_original_language'] = filters.selectedLanguage;
+    }
+
+    if (filters.mediaType === 'anime') {
+      params['with_genres'] = '16'; // Animation
+      params['with_original_language'] = 'ja'; // Japanese
+    } else if (filters.selectedGenres && filters.selectedGenres.length > 0) {
+      params['with_genres'] = filters.selectedGenres.join(',');
+    }
+
+    if (filters.selectedYear && filters.selectedYear !== 'all') {
+      if (filters.selectedYear === '2020s') {
+        params['primary_release_date.gte'] = '2020-01-01';
+        params['primary_release_date.lte'] = '2029-12-31';
+      } else if (filters.selectedYear === '2010s') {
+        params['primary_release_date.gte'] = '2010-01-01';
+        params['primary_release_date.lte'] = '2019-12-31';
+      } else {
+        if (endpointType === 'movie') {
+          params['primary_release_year'] = filters.selectedYear;
+        } else {
+          params['first_air_date_year'] = filters.selectedYear;
+        }
+      }
+    }
+
+    const data = await fetchFromTMDB(`/discover/${endpointType}`, params);
+    return (data.results || []).map((item: any) =>
+      mapMediaItem(item, endpointType as 'movie' | 'tv', config.imageBase)
+    );
+  } catch (e) {
+    console.warn('Failed discovering filtered media from TMDB:', e);
+    return [];
+  }
+};
+
 export const getImdbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<string | null> => {
   try {
     const data = await fetchFromTMDB(`/${mediaType}/${id}/external_ids`);
@@ -312,4 +370,5 @@ export const getImdbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<
     return null;
   }
 };
+
 

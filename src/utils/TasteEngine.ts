@@ -3,72 +3,139 @@ import { TMDBMediaItem } from './tmdb';
 
 export interface TasteProfile {
   genreWeights: Record<number, number>;
-  mediaTypePreference: 'all' | 'movie' | 'tv';
-  lovedIds: number[];
+  mediaTypeWeight: { movie: number; tv: number };
   likedIds: number[];
+  lovedIds: number[];
   dislikedIds: number[];
+  playbackStats: Record<number, { durationMinutes: number; percentCompleted: number }>;
 }
 
-const TASTE_STORAGE_KEY = '@movieshound_taste_profile';
+const TASTE_KEY = '@user_taste_profile';
 
-const DEFAULT_TASTE_PROFILE: TasteProfile = {
+const INITIAL_PROFILE: TasteProfile = {
   genreWeights: {},
-  mediaTypePreference: 'all',
-  lovedIds: [],
+  mediaTypeWeight: { movie: 0, tv: 0 },
   likedIds: [],
+  lovedIds: [],
   dislikedIds: [],
+  playbackStats: {},
 };
 
-export const getTasteProfile = async (): Promise<TasteProfile> => {
+export async function getTasteProfile(): Promise<TasteProfile> {
   try {
-    const raw = await AsyncStorage.getItem(TASTE_STORAGE_KEY);
-    if (!raw) return DEFAULT_TASTE_PROFILE;
+    const raw = await AsyncStorage.getItem(TASTE_KEY);
+    if (!raw) return INITIAL_PROFILE;
     return JSON.parse(raw);
-  } catch (e) {
-    return DEFAULT_TASTE_PROFILE;
+  } catch {
+    return INITIAL_PROFILE;
   }
-};
+}
 
-export const saveTasteProfile = async (profile: TasteProfile): Promise<void> => {
+export async function saveTasteProfile(profile: TasteProfile): Promise<void> {
   try {
-    await AsyncStorage.setItem(TASTE_STORAGE_KEY, JSON.stringify(profile));
-  } catch (e) {}
-};
+    await AsyncStorage.setItem(TASTE_KEY, JSON.stringify(profile));
+  } catch (err) {
+    console.error('Failed to save taste profile:', err);
+  }
+}
 
-export const updateTasteWithSwipe = async (
+/**
+ * Record explicit user swipe/action:
+ * 'loved' (+1.5), 'liked' (+0.5), 'disliked' (-0.5)
+ */
+export async function recordUserAction(
   item: TMDBMediaItem,
   action: 'loved' | 'liked' | 'disliked',
   genreIds: number[] = []
-): Promise<TasteProfile> => {
+): Promise<void> {
   const profile = await getTasteProfile();
-  const weightDelta = action === 'loved' ? 3.0 : action === 'liked' ? 1.0 : -2.0;
 
-  // Track ID
-  if (action === 'loved') {
-    if (!profile.lovedIds.includes(item.id)) profile.lovedIds.push(item.id);
-  } else if (action === 'liked') {
-    if (!profile.likedIds.includes(item.id)) profile.likedIds.push(item.id);
-  } else if (action === 'disliked') {
-    if (!profile.dislikedIds.includes(item.id)) profile.dislikedIds.push(item.id);
+  const weightDelta = action === 'loved' ? 1.5 : action === 'liked' ? 0.5 : -0.5;
+
+  // Update Media Type preference
+  if (item.mediaType === 'movie') {
+    profile.mediaTypeWeight.movie += weightDelta * 0.2;
+  } else {
+    profile.mediaTypeWeight.tv += weightDelta * 0.2;
   }
 
-  // Update genre weights
-  genreIds.forEach(gId => {
-    profile.genreWeights[gId] = (profile.genreWeights[gId] || 0) + weightDelta;
+  // Update Genre weights
+  genreIds.forEach((gId) => {
+    const current = profile.genreWeights[gId] || 0;
+    profile.genreWeights[gId] = current + weightDelta;
   });
+
+  // Track ID in lists
+  if (action === 'loved' && !profile.lovedIds.includes(item.id)) {
+    profile.lovedIds.push(item.id);
+  } else if (action === 'liked' && !profile.likedIds.includes(item.id)) {
+    profile.likedIds.push(item.id);
+  } else if (action === 'disliked' && !profile.dislikedIds.includes(item.id)) {
+    profile.dislikedIds.push(item.id);
+  }
 
   await saveTasteProfile(profile);
-  return profile;
-};
+}
 
-// Rank upcoming deck items based on Taste Profile scores
-export const rankDeckItemsByTaste = (items: TMDBMediaItem[], profile: TasteProfile): TMDBMediaItem[] => {
-  const excludedIds = new Set([...profile.lovedIds, ...profile.likedIds, ...profile.dislikedIds]);
-  const freshItems = items.filter(item => !excludedIds.has(item.id));
+/**
+ * Record implicit video playback behavior:
+ * - 5 to 10 mins: +0.5 interest boost
+ * - >75% completion: +1.5 completion boost
+ * - <1 min: -0.2 early drop-off penalty
+ */
+export async function recordPlaybackDuration(
+  item: TMDBMediaItem,
+  durationMinutes: number,
+  percentCompleted: number,
+  genreIds: number[] = []
+): Promise<void> {
+  const profile = await getTasteProfile();
 
-  return [...freshItems].sort((a, b) => {
-    const aRating = a.rating || 0;
-    const bRating = b.rating || 0;
-    return bRating - aRating;
+  let boost = 0;
+  if (percentCompleted >= 75) {
+    boost = 1.5;
+  } else if (durationMinutes >= 5) {
+    boost = 0.5;
+  } else if (durationMinutes < 1 && percentCompleted < 10) {
+    boost = -0.2;
+  }
+
+  if (boost !== 0) {
+    genreIds.forEach((gId) => {
+      const current = profile.genreWeights[gId] || 0;
+      profile.genreWeights[gId] = current + boost;
+    });
+  }
+
+  profile.playbackStats[item.id] = { durationMinutes, percentCompleted };
+  await saveTasteProfile(profile);
+}
+
+/**
+ * Ranks items based on the user's taste profile
+ */
+export function rankItemsByTaste(
+  items: TMDBMediaItem[],
+  profile: TasteProfile,
+  getItemGenres: (item: TMDBMediaItem) => number[] = () => []
+): TMDBMediaItem[] {
+  return [...items].sort((a, b) => {
+    // Filter out disliked items
+    if (profile.dislikedIds.includes(a.id)) return 1;
+    if (profile.dislikedIds.includes(b.id)) return -1;
+
+    let scoreA = 0;
+    let scoreB = 0;
+
+    const genresA = getItemGenres(a);
+    const genresB = getItemGenres(b);
+
+    genresA.forEach((g) => (scoreA += profile.genreWeights[g] || 0));
+    genresB.forEach((g) => (scoreB += profile.genreWeights[g] || 0));
+
+    scoreA += (profile.mediaTypeWeight[a.mediaType] || 0);
+    scoreB += (profile.mediaTypeWeight[b.mediaType] || 0);
+
+    return scoreB - scoreA;
   });
-};
+}

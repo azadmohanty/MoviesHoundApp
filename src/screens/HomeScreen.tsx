@@ -27,6 +27,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { CategoryPill } from '../components/CategoryPill';
 import { ResultCard } from '../components/ResultCard';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
+import { SkeletonCard } from '../components/SkeletonCard';
+import { FilterDrawerModal, FilterOptions } from '../components/FilterDrawerModal';
 import { SearchResult, parseHTML } from '../utils/parser';
 import { resolveAllDomains } from '../utils/resolver';
 import { resolveStreamUrl } from '../utils/streamResolver';
@@ -64,7 +66,13 @@ type WatchlistItem = {
   mediaType: 'movie' | 'tv' | 'anime';
 };
 
-export default function HomeScreen() {
+interface HomeScreenProps {
+  onNavigateToDownloader?: (query: string) => void;
+}
+
+export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps = {}) {
+  // Swiparr Filter Drawer State
+  const [filterDrawerVisible, setFilterDrawerVisible] = useState(false);
   // Navigation & Tab State
   const [currentTab, setCurrentTab] = useState<'home' | 'explore' | 'me'>('home');
 
@@ -719,9 +727,8 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* TAB 1: HOME */}
-      {currentTab === 'home' && (
-        <View style={styles.tabContent}>
+      {/* HOME FEED */}
+      <View style={styles.tabContent}>
           <View style={{ zIndex: 1000 }}>
             <View style={styles.searchContainer}>
               <TextInput
@@ -758,6 +765,12 @@ export default function HomeScreen() {
               )}
               <TouchableOpacity style={styles.searchButton} onPress={() => handleSearchSubmit()}>
                 <Text style={styles.searchButtonText}>GO</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.searchButton, { borderLeftWidth: 1, backgroundColor: 'rgba(255, 45, 85, 0.1)' }]}
+                onPress={() => setFilterDrawerVisible(true)}
+              >
+                <Ionicons name="options-outline" size={18} color="#FF2D55" />
               </TouchableOpacity>
             </View>
 
@@ -942,352 +955,23 @@ export default function HomeScreen() {
               </View>
             </ScrollView>
           )}
-        </View>
-      )}
 
-      {/* TAB 2: EXPLORE (FULL-CONTROL FILTERS) */}
-      {currentTab === 'explore' && (
-        <View style={styles.tabContent}>
-          {/* Custom Sliding Toggle Switch */}
-          <View style={styles.toggleOuterContainer}>
-            <View style={styles.animatedToggleContainer}>
-              <Animated.View style={[styles.animatedToggleSlider, { left: leftOffset }]} />
-              <TouchableOpacity
-                style={styles.animatedToggleButton}
-                onPress={() => handleToggleExploreType('movie')}
-                activeOpacity={0.9}
-              >
-                <Text style={[styles.animatedToggleText, exploreType === 'movie' ? styles.toggleTextActive : styles.toggleTextInactive]}>MOVIES</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.animatedToggleButton}
-                onPress={() => handleToggleExploreType('tv')}
-                activeOpacity={0.9}
-              >
-                <Text style={[styles.animatedToggleText, exploreType === 'tv' ? styles.toggleTextActive : styles.toggleTextInactive]}>SERIES</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {exploreLoading ? (
-            <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />
-          ) : (
-            <FlatList
-              data={exploreMedia}
-              keyExtractor={(item) => `explore-${item.id}`}
-              numColumns={3}
-              contentContainerStyle={[styles.exploreGrid, { paddingBottom: 100 }]}
-              columnWrapperStyle={styles.exploreGridRow}
-              renderItem={({ item }) => renderFeedCard(item, exploreType, 'all')}
-              ListEmptyComponent={
-                <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyText}>NO TITLES MATCH THIS FILTER</Text>
-                </View>
+          {/* Filter Drawer Modal */}
+          <FilterDrawerModal
+            visible={filterDrawerVisible}
+            onClose={() => setFilterDrawerVisible(false)}
+            onApplyFilters={(filters) => {
+              // Apply filters to query / discover
+              if (filters.selectedGenres.length > 0) {
+                discoverMediaByGenre(filters.selectedGenres[0], 1, undefined, filters.sortBy, filters.mediaType === 'tv' ? 'tv' : 'movie')
+                  .then(results => {
+                    setTmdbSearchResults(results);
+                    setIsSearchActive(true);
+                  });
               }
-            />
-          )}
-
-          {/* Floating Action Button (FAB) at Bottom-Center */}
-          <TouchableOpacity
-            style={styles.filterFAB}
-            onPress={() => setExploreFilterVisible(true)}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="funnel-outline" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-            <Text style={styles.filterFABText}>FILTER BY</Text>
-          </TouchableOpacity>
-
-          {/* Custom Slide-Up Bottom Sheet Modal */}
-          <Modal
-            visible={exploreFilterVisible}
-            animationType="slide"
-            transparent={true}
-            onRequestClose={() => setExploreFilterVisible(false)}
-          >
-            <TouchableOpacity
-              style={styles.modalBackdrop}
-              activeOpacity={1}
-              onPress={() => setExploreFilterVisible(false)}
-            >
-              <View style={styles.bottomSheetContent} onStartShouldSetResponder={() => true}>
-                <View style={styles.bottomSheetHeader}>
-                  <Text style={styles.bottomSheetTitle}>FILTER SETTINGS</Text>
-                  <TouchableOpacity onPress={() => setExploreFilterVisible(false)}>
-                    <Text style={styles.bottomSheetClose}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <ScrollView style={styles.bottomSheetScroll} showsVerticalScrollIndicator={false}>
-                  {/* Genres selection */}
-                  <Text style={styles.bottomSheetSubHeading}>GENRES</Text>
-                  <View style={styles.bottomSheetGrid}>
-                    {Object.keys(TMDB_GENRES).map((genreName) => (
-                      <TouchableOpacity
-                        key={genreName}
-                        style={[
-                          styles.bottomSheetPill,
-                          selectedGenre === genreName && styles.bottomSheetPillActive
-                        ]}
-                        onPress={() => setSelectedGenre(genreName)}
-                      >
-                        <Text style={[
-                          styles.bottomSheetPillText,
-                          selectedGenre === genreName && styles.bottomSheetPillTextActive
-                        ]}>
-                          {genreName.toUpperCase()}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* Year selection */}
-                  <Text style={styles.bottomSheetSubHeading}>RELEASE YEAR</Text>
-                  <View style={styles.bottomSheetGrid}>
-                    {YEAR_OPTIONS.map((yr) => (
-                      <TouchableOpacity
-                        key={yr}
-                        style={[
-                          styles.bottomSheetPill,
-                          selectedYear === yr && styles.bottomSheetPillActive
-                        ]}
-                        onPress={() => setSelectedYear(yr)}
-                      >
-                        <Text style={[
-                          styles.bottomSheetPillText,
-                          selectedYear === yr && styles.bottomSheetPillTextActive
-                        ]}>
-                          {yr}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* Rating selection */}
-                  <Text style={styles.bottomSheetSubHeading}>MINIMUM RATING</Text>
-                  <View style={styles.bottomSheetGrid}>
-                    {RATING_OPTIONS.map((rat) => (
-                      <TouchableOpacity
-                        key={rat.label}
-                        style={[
-                          styles.bottomSheetPill,
-                          selectedRating === rat.value && styles.bottomSheetPillActive
-                        ]}
-                        onPress={() => setSelectedRating(rat.value)}
-                      >
-                        <Text style={[
-                          styles.bottomSheetPillText,
-                          selectedRating === rat.value && styles.bottomSheetPillTextActive
-                        ]}>
-                          ★ {rat.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <View style={{ height: 60 }} />
-                </ScrollView>
-
-                <TouchableOpacity
-                  style={styles.applyButton}
-                  onPress={() => setExploreFilterVisible(false)}
-                >
-                  <Text style={styles.applyButtonText}>APPLY FILTERS</Text>
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
-          </Modal>
+            }}
+          />
         </View>
-      )}
-
-      {/* TAB 3: ME (WATCHLIST & SETTINGS) */}
-      {currentTab === 'me' && (
-        <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
-          <Text style={styles.sectionTitle}>MY WATCHLIST</Text>
-          {watchlist.length > 0 ? (
-            <View style={styles.watchlistGrid}>
-              {watchlist.map(item => (
-                <View key={`${item.mediaType}-${item.id}`} style={styles.watchlistItem}>
-                  <TouchableOpacity onPress={() => handleSearchSubmitWithIMDb(item.title, item.mediaType, item.id)}>
-                    <Image source={{ uri: item.posterUrl }} style={styles.watchlistPoster} />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.watchlistRemove} onPress={() => toggleWatchlist(item)}>
-                    <Text style={styles.watchlistRemoveText}>REMOVE</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.watchlistTitle} numberOfLines={1}>
-                    {item.title.toUpperCase()}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={styles.emptySettingsText}>WATCHLIST IS EMPTY</Text>
-          )}
-
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionTitle}>THEME CUSTOMIZATION</Text>
-          <View style={styles.accentContainer}>
-            <Text style={styles.accentLabel}>ACCENT COLOR</Text>
-            <View style={styles.accentRow}>
-              {(['#FF2D55', '#00FF88', '#FFFFFF'] as const).map(color => (
-                <TouchableOpacity
-                  key={color}
-                  style={[
-                    styles.accentPill, 
-                    { borderColor: color }, 
-                    accentColor === color && { backgroundColor: color }
-                  ]}
-                  onPress={() => updateSetting('@movieshound_accent_color', color)}
-                >
-                  <Text style={[
-                    styles.accentPillText, 
-                    accentColor === color ? { color: '#0A0A0C' } : { color }
-                  ]}>
-                    {color === '#FF2D55' ? 'RED' : color === '#00FF88' ? 'GREEN' : 'MONO'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionTitle}>TMDB CREDENTIALS</Text>
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>TMDB API KEY (ACCESS TOKEN)</Text>
-            <TextInput
-              style={styles.settingsInput}
-              value={tmdbKey}
-              onChangeText={val => updateSetting('@movieshound_tmdb_key', val)}
-              placeholder="ENTER API KEY"
-              placeholderTextColor="rgba(255,255,255,0.2)"
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry={true}
-            />
-          </View>
-
-          <View style={styles.switchGroup}>
-            <View>
-              <Text style={styles.switchLabel}>BYPASS INDIA ISP BLOCK</Text>
-              <Text style={styles.switchDesc}>Proxy TMDB requests to unblock connections</Text>
-            </View>
-            <Switch
-              value={proxyEnabled}
-              onValueChange={val => updateSetting('@movieshound_tmdb_proxy_enabled', val ? 'true' : 'false')}
-              trackColor={{ false: '#1A1A1C', true: accentColor }}
-              thumbColor="#FFFFFF"
-            />
-          </View>
-
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionTitle}>DIAGNOSTICS & SCRAPERS HEALTH</Text>
-          <View style={styles.diagnosticsContainer}>
-            {Object.entries(resolvedDomains).map(([key, domain]) => (
-              <View key={key} style={styles.diagnosticRow}>
-                <View style={styles.diagnosticDetails}>
-                  <Text style={styles.diagnosticName}>{key.toUpperCase()}</Text>
-                  <Text style={styles.diagnosticUrl} numberOfLines={1}>{domain}</Text>
-                </View>
-                <View style={styles.diagnosticActions}>
-                  {pingStatus[key]?.status === 'checking' && (
-                    <ActivityIndicator size="small" color={accentColor} style={styles.pingSpinner} />
-                  )}
-                  {pingStatus[key]?.status === 'ok' && (
-                    <Text style={styles.pingSuccess}>{pingStatus[key].latency}ms</Text>
-                  )}
-                  {pingStatus[key]?.status === 'error' && (
-                    <Text style={styles.pingError}>DEAD</Text>
-                  )}
-                  <TouchableOpacity style={styles.pingButton} onPress={() => runPingCheck(key, domain)}>
-                    <Text style={styles.pingButtonText}>PING</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-          </View>
-
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionTitle}>DATA MANAGEMENT</Text>
-          <View style={styles.accentContainer}>
-            {(clickHistoryTMDB.length > 0 || clickHistoryAnime.length > 0) ? (
-              <TouchableOpacity style={styles.clearHistoryButton} onPress={clearHistory}>
-                <Text style={styles.clearHistoryButtonText}>CLEAR LOCAL CLICK HISTORY</Text>
-              </TouchableOpacity>
-            ) : (
-              <Text style={styles.emptySettingsText}>NO CLICK HISTORY SAVED</Text>
-            )}
-          </View>
-        </ScrollView>
-      )}
-
-      {/* YouTube-Style Bottom Navigation Bar */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => {
-            if (currentTab === 'home') {
-              setQuery('');
-              setCategory('all');
-              setIsSearchActive(false);
-              setTmdbSearchResults([]);
-            } else {
-              setCurrentTab('home');
-            }
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={currentTab === 'home' ? 'home' : 'home-outline'}
-            size={20}
-            color={currentTab === 'home' ? accentColor : 'rgba(255,255,255,0.4)'}
-          />
-          <Text style={[styles.tabLabel, currentTab === 'home' ? { color: accentColor } : styles.tabInactive]}>
-            HOME
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => {
-            setCurrentTab('explore');
-            setIsSearchActive(false);
-            setQuery('');
-            setTmdbSearchResults([]);
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={currentTab === 'explore' ? 'compass' : 'compass-outline'}
-            size={20}
-            color={currentTab === 'explore' ? accentColor : 'rgba(255,255,255,0.4)'}
-          />
-          <Text style={[styles.tabLabel, currentTab === 'explore' ? { color: accentColor } : styles.tabInactive]}>
-            EXPLORE
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => {
-            setCurrentTab('me');
-            setIsSearchActive(false);
-            setQuery('');
-            setTmdbSearchResults([]);
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={currentTab === 'me' ? 'person' : 'person-outline'}
-            size={20}
-            color={currentTab === 'me' ? accentColor : 'rgba(255,255,255,0.4)'}
-          />
-          <Text style={[styles.tabLabel, currentTab === 'me' ? { color: accentColor } : styles.tabInactive]}>
-            ME
-          </Text>
-        </TouchableOpacity>
-      </View>
 
       {/* YouTube-Style Player Modal Component */}
       <VideoPlayerModal

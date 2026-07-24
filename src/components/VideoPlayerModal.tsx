@@ -17,6 +17,7 @@ import { VideoView, useVideoPlayer } from 'expo-video';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getMediaCredits, getSimilarMedia, getTVShowDetails, CastMember, TMDBMediaItem, TVShowDetails } from '../utils/tmdb';
 import { getStreamServerUrl, resolveStreamUrl } from '../utils/streamResolver';
+import { recordPlaybackDuration } from '../utils/TasteEngine';
 
 const { width } = Dimensions.get('window');
 

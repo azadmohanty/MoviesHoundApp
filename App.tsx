@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFonts } from 'expo-font';
-import { BottomNavigation } from './src/navigation/BottomNavigation';
+import AppNavigator from './src/navigation/AppNavigator';
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -19,7 +19,7 @@ export default function App() {
     );
   }
 
-  return <BottomNavigation />;
+  return <AppNavigator />;
 }
 
 const styles = StyleSheet.create({
