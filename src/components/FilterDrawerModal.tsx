@@ -6,8 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 export interface FilterOptions {
@@ -100,6 +100,28 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
   const [sortBy, setSortBy] = useState<string>(
     initialFilters?.sortBy || 'popularity.desc'
   );
+  const insets = useSafeAreaInsets();
+
+  const activeCount =
+    (mediaType !== 'both' ? 1 : 0) +
+    (selectedLanguage !== 'all' ? 1 : 0) +
+    (selectedYear !== 'all' ? 1 : 0) +
+    selectedOtts.length +
+    selectedGenres.length +
+    (minRating > 0 ? 1 : 0) +
+    (sortBy !== 'popularity.desc' ? 1 : 0);
+
+  React.useEffect(() => {
+    if (visible && initialFilters) {
+      setMediaType(initialFilters.mediaType || 'both');
+      setSelectedLanguage(initialFilters.selectedLanguage || 'all');
+      setSelectedYear(initialFilters.selectedYear || 'all');
+      setSelectedOtts(initialFilters.selectedOtts || []);
+      setSelectedGenres(initialFilters.selectedGenres || []);
+      setMinRating(initialFilters.minRating || 0);
+      setSortBy(initialFilters.sortBy || 'popularity.desc');
+    }
+  }, [visible, initialFilters]);
 
   const toggleOtt = (id: string) => {
     if (selectedOtts.includes(id)) {
@@ -322,13 +344,15 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
               </View>
             </ScrollView>
 
-            {/* Actions */}
-            <View style={styles.footer}>
+            {/* Sticky Actions Footer */}
+            <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
               <TouchableOpacity style={styles.resetButton} onPress={handleReset}>
                 <Text style={styles.resetText}>RESET</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.applyButton} onPress={handleApply}>
-                <Text style={styles.applyText}>APPLY FILTERS</Text>
+                <Text style={styles.applyText}>
+                  {activeCount > 0 ? `APPLY FILTERS (${activeCount})` : 'APPLY FILTERS'}
+                </Text>
               </TouchableOpacity>
             </View>
           </SafeAreaView>
@@ -351,12 +375,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F0F13',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '88%',
+    height: '84%',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   safeArea: {
-    paddingBottom: 10,
+    flex: 1,
   },
   header: {
     flexDirection: 'row',
@@ -383,6 +407,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   content: {
+    flex: 1,
     paddingHorizontal: 20,
     paddingTop: 10,
   },
@@ -442,10 +467,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingTop: 14,
+    backgroundColor: '#0F0F13',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.08)',
-    marginTop: 10,
   },
   resetButton: {
     flex: 1,

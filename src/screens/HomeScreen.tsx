@@ -16,9 +16,10 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
-  Animated
+  Animated,
+  Dimensions
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -42,9 +43,11 @@ import {
   getTMDBConfig,
   getIMDbId,
   discoverMediaByGenre,
+  discoverMediaWithFilters,
   TMDB_GENRES,
   searchTMDB
 } from '../utils/tmdb';
+import { getTasteProfile, rankItemsByTaste } from '../utils/TasteEngine';
 import {
   getTrendingAnime,
   getPopularAnime,
@@ -73,8 +76,27 @@ interface HomeScreenProps {
 export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps = {}) {
   // Swiparr Filter Drawer State
   const [filterDrawerVisible, setFilterDrawerVisible] = useState(false);
-  // Navigation & Tab State
+  // Navigation & Sub-Tab State
   const [currentTab, setCurrentTab] = useState<'home' | 'explore' | 'me'>('home');
+  const [subTab, setSubTab] = useState<'for_you' | 'explore'>('for_you');
+  const [activeFilters, setActiveFilters] = useState<FilterOptions | null>(null);
+
+  const insets = useSafeAreaInsets();
+  const [isSearchOverlayOpen, setIsSearchOverlayOpen] = useState(false);
+
+  const { width: screenWidth } = Dimensions.get('window');
+  const cardWidth = Math.floor((screenWidth - 48) / 3);
+  const cardHeight = Math.floor(cardWidth * 1.5);
+
+  const activeFilterCount = activeFilters
+    ? (activeFilters.mediaType !== 'both' ? 1 : 0) +
+      (activeFilters.selectedLanguage !== 'all' ? 1 : 0) +
+      (activeFilters.selectedYear !== 'all' ? 1 : 0) +
+      (activeFilters.selectedOtts?.length || 0) +
+      (activeFilters.selectedGenres?.length || 0) +
+      (activeFilters.minRating > 0 ? 1 : 0) +
+      (activeFilters.sortBy !== 'popularity.desc' ? 1 : 0)
+    : 0;
 
   // Theme Accent State
   const [accentColor, setAccentColor] = useState('#FF2D55'); // Default: Nothing Red
@@ -135,6 +157,25 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const [tmdbSearchResults, setTmdbSearchResults] = useState<TMDBMediaItem[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const removeRecentSearch = async (term: string) => {
+    try {
+      const updated = recentSearches.filter(t => t !== term);
+      await AsyncStorage.setItem('@movieshound_recent_searches', JSON.stringify(updated));
+      setRecentSearches(updated);
+    } catch (e) {
+      console.warn('Failed removing search term:', e);
+    }
+  };
+
+  const clearAllRecentSearches = async () => {
+    try {
+      await AsyncStorage.removeItem('@movieshound_recent_searches');
+      setRecentSearches([]);
+    } catch (e) {
+      console.warn('Failed clearing search history:', e);
+    }
+  };
   const [searchMode, setSearchMode] = useState<'movies' | 'downloads'>('movies');
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [exploreFilterVisible, setExploreFilterVisible] = useState(false);
@@ -262,6 +303,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     try {
       setFeedsLoading(true);
       const config = await getTMDBConfig();
+      const profile = await getTasteProfile();
       
       const animeTrends = await getTrendingAnime();
       setTrendingAnime(animeTrends);
@@ -270,7 +312,6 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         try {
           const hollywood = await getTrendingMovies();
           setTrendingHollywood(hollywood);
-          if (hollywood.length > 0) setHeroMedia(hollywood[0]);
 
           const tvShows = await getTrendingTVShows();
           setTrendingTV(tvShows);
@@ -278,16 +319,14 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
           const bollywood = await getBollywoodMovies();
           setBollywoodHits(bollywood);
 
-          const personalTMDB = await getPersonalizedTMDBRecommendations(clickHistoryTMDB);
-          const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
+          const rankedTMDB = rankItemsByTaste([...hollywood, ...tvShows, ...bollywood], profile);
+          setForYouFeed(rankedTMDB);
 
-          const combined: (TMDBMediaItem | AniListAnimeItem)[] = [];
-          const maxLen = Math.max(personalTMDB.length, personalAnime.length);
-          for (let i = 0; i < maxLen; i++) {
-            if (personalTMDB[i]) combined.push(personalTMDB[i]);
-            if (personalAnime[i]) combined.push(personalAnime[i]);
+          if (rankedTMDB.length > 0) {
+            setHeroMedia(rankedTMDB[0]);
+          } else if (hollywood.length > 0) {
+            setHeroMedia(hollywood[0]);
           }
-          setForYouFeed(combined);
         } catch (tmdbErr) {
           console.warn('Failed to fetch TMDB feeds:', tmdbErr);
           const personalAnime = await getPersonalizedAnimeRecommendations(clickHistoryAnime);
@@ -304,30 +343,36 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     }
   };
 
-  const loadExploreData = async () => {
+  const loadExploreData = async (filtersToUse?: FilterOptions | null) => {
     try {
       setExploreLoading(true);
-      let genreId = TMDB_GENRES[selectedGenre];
-      if (exploreType === 'tv') {
-        if (selectedGenre === 'Action' || selectedGenre === 'Adventure') {
-          genreId = 10759; // TV Action & Adventure
-        } else if (selectedGenre === 'SciFi') {
-          genreId = 10765; // TV Sci-Fi & Fantasy
-        } else if (selectedGenre === 'Horror' || selectedGenre === 'Thriller') {
-          genreId = 9648; // TV Mystery (Closest to Thriller/Horror)
+      const f = filtersToUse !== undefined ? filtersToUse : activeFilters;
+      if (f) {
+        const items = await discoverMediaWithFilters(f);
+        setExploreMedia(items);
+      } else {
+        let genreId = TMDB_GENRES[selectedGenre];
+        if (exploreType === 'tv') {
+          if (selectedGenre === 'Action' || selectedGenre === 'Adventure') {
+            genreId = 10759;
+          } else if (selectedGenre === 'SciFi') {
+            genreId = 10765;
+          } else if (selectedGenre === 'Horror' || selectedGenre === 'Thriller') {
+            genreId = 9648;
+          }
         }
+        let numericYear: number | undefined = undefined;
+        if (selectedYear !== 'ALL YEARS') {
+          const parsed = parseInt(selectedYear, 10);
+          if (!isNaN(parsed)) numericYear = parsed;
+        }
+        const items = await discoverMediaByGenre(genreId, 1, numericYear, 'popularity.desc', exploreType);
+        let filtered = items;
+        if (selectedRating > 0) {
+          filtered = filtered.filter(i => i.rating >= selectedRating);
+        }
+        setExploreMedia(filtered);
       }
-      let numericYear: number | undefined = undefined;
-      if (selectedYear !== 'ALL YEARS') {
-        const parsed = parseInt(selectedYear, 10);
-        if (!isNaN(parsed)) numericYear = parsed;
-      }
-      const items = await discoverMediaByGenre(genreId, 1, numericYear, 'popularity.desc', exploreType);
-      let filtered = items;
-      if (selectedRating > 0) {
-        filtered = filtered.filter(i => i.rating >= selectedRating);
-      }
-      setExploreMedia(filtered);
     } catch (e) {
       console.warn('Failed loading explore data:', e);
     } finally {
@@ -656,8 +701,8 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     const voteFormatted = 'voteCountFormatted' in item ? item.voteCountFormatted : null;
 
     return (
-      <View key={`${type}-${item.id}`} style={styles.feedCard}>
-        <View style={styles.posterWrapper}>
+      <View key={`${type}-${item.id}`} style={[styles.feedCard, { width: cardWidth }]}>
+        <View style={[styles.posterWrapper, { width: cardWidth, height: cardHeight }]}>
           <TouchableOpacity
             onPress={() => {
               trackMediaClick(item.id, type);
@@ -665,7 +710,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             }}
             activeOpacity={0.8}
           >
-            <Image source={{ uri: item.posterUrl }} style={styles.feedPoster} />
+            <Image source={{ uri: item.posterUrl }} style={[styles.feedPoster, { width: cardWidth, height: cardHeight }]} />
           </TouchableOpacity>
           
           {/* Watchlist Star Button (Top Right) */}
@@ -713,265 +758,407 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   });
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* Header Bar */}
-      <View style={styles.header}>
+      {/* Dynamic Ambient Blurred Poster Backdrop (Swipe Screen Style) */}
+      <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+        {heroMedia && (
+          <Image
+            source={{ uri: heroMedia.backdropUrl || heroMedia.posterUrl }}
+            style={{ width: '100%', height: '100%', opacity: 0.85 }}
+            blurRadius={28}
+            resizeMode="cover"
+          />
+        )}
+        <LinearGradient
+          colors={['rgba(15, 12, 24, 0.2)', 'rgba(10, 10, 12, 0.72)', '#0A0A0C']}
+          style={StyleSheet.absoluteFillObject}
+        />
+      </View>
+
+      {/* Row 1 Header: HOLOGRAM Logo (Left) + Search Icon (Right) */}
+      <View style={styles.headerRow}>
         <Text style={styles.brandTitle}>HOLOGRAM</Text>
-        <TouchableOpacity onPress={() => loadDomains(true)} style={styles.statusRow}>
-          <View style={[styles.statusDot, Object.keys(resolvedDomains).length > 0 ? { backgroundColor: accentColor } : styles.dotRed]} />
-          <Text style={styles.brandSubtitle}>
-            {Object.keys(resolvedDomains).length > 0 ? 'SYNCED' : 'OFFLINE'}
+
+        <TouchableOpacity
+          style={styles.headerSearchBtn}
+          onPress={() => setIsSearchOverlayOpen(true)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="search-outline" size={20} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Row 2: Full-Width Centered Glass Sub-Tab Capsule */}
+      <View style={styles.glassSubTabCapsuleRow}>
+        <TouchableOpacity
+          style={[styles.glassSubTabBtn, subTab === 'for_you' && styles.glassSubTabBtnActive]}
+          onPress={() => setSubTab('for_you')}
+        >
+          <Text style={[styles.glassSubTabText, subTab === 'for_you' && styles.glassSubTabTextActive]}>
+            FOR YOU
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.glassSubTabBtn, subTab === 'explore' && styles.glassSubTabBtnActive]}
+          onPress={() => {
+            setSubTab('explore');
+            if (exploreMedia.length === 0) loadExploreData();
+          }}
+        >
+          <Text style={[styles.glassSubTabText, subTab === 'explore' && styles.glassSubTabTextActive]}>
+            EXPLORE
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* HOME FEED */}
-      <View style={styles.tabContent}>
-          <View style={{ zIndex: 1000 }}>
-            <View style={styles.searchContainer}>
-              <TextInput
-                style={styles.searchInput}
-                placeholder="SEARCH MOVIES & SERIES..."
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                value={query}
-                onChangeText={(text) => {
-                  setQuery(text);
-                  if (text.trim() === '') {
-                    setSearchSuggestions([]);
-                    setShowSuggestions(false);
-                    setTmdbSearchResults([]);
-                    setIsSearchActive(false);
-                  }
-                }}
-                onSubmitEditing={() => handleSearchSubmit()}
-                autoCorrect={false}
-                returnKeyType="search"
-              />
-              {query.length > 0 && (
-                <TouchableOpacity
-                  style={styles.clearSearchInput}
-                  onPress={() => {
-                    setQuery('');
-                    setSearchSuggestions([]);
-                    setShowSuggestions(false);
-                    setTmdbSearchResults([]);
-                    setIsSearchActive(false);
-                  }}
-                >
-                  <Text style={styles.clearSearchInputText}>×</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity style={styles.searchButton} onPress={() => handleSearchSubmit()}>
-                <Text style={styles.searchButtonText}>GO</Text>
-              </TouchableOpacity>
+      {/* YouTube-Style Search Overlay Modal / Drawer */}
+      {isSearchOverlayOpen && (
+        <View style={styles.searchOverlayContainer}>
+          {/* Search Header Bar */}
+          <View style={styles.searchOverlayHeader}>
+            <TouchableOpacity
+              style={styles.searchOverlayBackBtn}
+              onPress={() => {
+                setIsSearchOverlayOpen(false);
+                setQuery('');
+                setShowSuggestions(false);
+                setIsSearchActive(false);
+              }}
+            >
+              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            <TextInput
+              style={styles.searchOverlayInput}
+              placeholder="SEARCH MOVIES, SHOWS, ANIME..."
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              value={query}
+              onChangeText={(text) => {
+                setQuery(text);
+                if (text.trim() === '') {
+                  setSearchSuggestions([]);
+                  setShowSuggestions(false);
+                  setIsSearchActive(false);
+                }
+              }}
+              onSubmitEditing={() => {
+                handleSearchSubmit();
+                setIsSearchOverlayOpen(false);
+              }}
+              autoFocus={true}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+
+            {query.length > 0 && (
               <TouchableOpacity
-                style={[styles.searchButton, { borderLeftWidth: 1, backgroundColor: 'rgba(255, 45, 85, 0.1)' }]}
-                onPress={() => setFilterDrawerVisible(true)}
+                style={styles.searchOverlayClearBtn}
+                onPress={() => {
+                  setQuery('');
+                  setSearchSuggestions([]);
+                  setShowSuggestions(false);
+                  setIsSearchActive(false);
+                }}
               >
-                <Ionicons name="options-outline" size={18} color="#FF2D55" />
+                <Ionicons name="close-circle" size={18} color="rgba(255,255,255,0.5)" />
               </TouchableOpacity>
-            </View>
-
-            {/* Search Suggestions Dropdown */}
-            {showSuggestions && searchSuggestions.length > 0 && (
-              <View style={styles.suggestionsContainer}>
-                {searchSuggestions.map((item) => (
-                  <View key={`sugg-${item.id}`} style={styles.suggestionItem}>
-                    <TouchableOpacity
-                      style={styles.suggestionTitleBtn}
-                      onPress={() => {
-                        setQuery(item.title);
-                        setShowSuggestions(false);
-                        handleWatchStream(item);
-                      }}
-                    >
-                      <Text style={styles.suggestionText} numberOfLines={1}>
-                        {item.title.toUpperCase()} ({item.releaseDate ? item.releaseDate.split('-')[0] : 'N/A'})
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.suggestionDownloadBtn}
-                      onPress={() => {
-                        setQuery(item.title);
-                        setShowSuggestions(false);
-                        runDownloadScraper(item.title, item.mediaType || 'movie', item.id);
-                      }}
-                    >
-                      <Text style={[styles.suggestionDownloadIcon, { color: accentColor }]}>↓</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
             )}
+          </View>
 
-            {/* Recent Searches Row */}
-            {recentSearches.length > 0 && query.length === 0 && (
-              <View style={styles.recentSearchesContainer}>
-                <Text style={styles.recentSearchesLabel}>RECENT:</Text>
-                {recentSearches.map((term, idx) => (
+          {/* Search Content Body */}
+          <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+            {/* When Query is Empty: Render YouTube-Style Recent Search History */}
+            {query.trim() === '' ? (
+              <View style={styles.recentHistorySection}>
+                <View style={styles.recentHistoryHeader}>
+                  <Text style={styles.recentHistoryTitle}>RECENT SEARCHES</Text>
+                  {recentSearches.length > 0 && (
+                    <TouchableOpacity onPress={clearAllRecentSearches}>
+                      <Text style={styles.clearAllHistoryText}>CLEAR ALL</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {recentSearches.length > 0 ? (
+                  recentSearches.map((term, idx) => (
+                    <View key={`recent-row-${idx}`} style={styles.recentHistoryRow}>
+                      <TouchableOpacity
+                        style={styles.recentHistoryTextContainer}
+                        onPress={() => {
+                          setQuery(term);
+                          handleSearchSubmit(term);
+                          setIsSearchOverlayOpen(false);
+                        }}
+                      >
+                        <Ionicons name="time-outline" size={18} color="rgba(255,255,255,0.4)" />
+                        <Text style={styles.recentHistoryItemText}>{term.toUpperCase()}</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.removeHistoryItemBtn}
+                        onPress={() => removeRecentSearch(term)}
+                      >
+                        <Ionicons name="close" size={16} color="rgba(255,255,255,0.3)" />
+                      </TouchableOpacity>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyHistoryText}>NO RECENT SEARCH HISTORY</Text>
+                )}
+              </View>
+            ) : (
+              /* When Query Has Text: Render Autocomplete Suggestions */
+              <View style={styles.suggestionsList}>
+                {searchSuggestions.map((item) => (
                   <TouchableOpacity
-                    key={`recent-${idx}`}
-                    style={styles.recentSearchPill}
+                    key={`sugg-${item.id}`}
+                    style={styles.suggestionRow}
                     onPress={() => {
-                      setQuery(term);
-                      handleSearchSubmit(term);
+                      setQuery(item.title);
+                      setIsSearchOverlayOpen(false);
+                      handleWatchStream(item);
                     }}
                   >
-                    <Text style={styles.recentSearchPillText}>{term.toUpperCase()}</Text>
+                    <Ionicons name="search" size={16} color="#FF2D55" style={{ marginRight: 12 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.suggestionTitleText} numberOfLines={1}>
+                        {item.title.toUpperCase()}
+                      </Text>
+                      <Text style={styles.suggestionSubText}>
+                        {item.releaseDate ? item.releaseDate.split('-')[0] : 'N/A'} • {item.mediaType?.toUpperCase()}
+                      </Text>
+                    </View>
                   </TouchableOpacity>
                 ))}
               </View>
             )}
-          </View>
+          </ScrollView>
+        </View>
+      )}
 
-          <View style={styles.categoryRow}>
-            {(['all', 'hollywood', 'bollywood', 'anime'] as const).map((cat) => (
-              <CategoryPill
-                key={cat}
-                title={cat}
-                isActive={category === cat}
-                onPress={() => setCategory(cat)}
-              />
-            ))}
-          </View>
-
-          {statusMessage ? (
-            <View style={styles.statusBox}>
-              <Text style={[styles.statusText, { color: accentColor }]}>{statusMessage.toUpperCase()}</Text>
-            </View>
-          ) : null}
-
-          {loading && <ActivityIndicator size="small" color={accentColor} style={styles.spinner} />}
-
-          {isSearchActive ? (
-            <FlatList
-              data={tmdbSearchResults}
-              keyExtractor={(item) => `search-tmdb-${item.id}`}
-              numColumns={3}
-              contentContainerStyle={styles.exploreGrid}
-              columnWrapperStyle={styles.exploreGridRow}
-              renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
-              ListEmptyComponent={
-                !loading ? (
-                  <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyText}>NO CATALOG RESULTS FOUND</Text>
-                    <TouchableOpacity
-                      style={styles.bypassScraperButton}
-                      onPress={() => runDownloadScraper(query, 'movie')}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.bypassScraperButtonText}>
-                        SEARCH DOWNLOAD FILES FOR "{query.toUpperCase()}" DIRECTLY →
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null
-              }
-            />
-          ) : (
-            <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
-              {/* Featured Hero Banner at Top of Home Feed */}
-              {heroMedia && (
-                <View style={styles.heroContainer}>
-                  <Image source={{ uri: heroMedia.backdropUrl }} style={styles.heroImage} />
-                  <LinearGradient
-                    colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
-                    style={styles.heroGradient}
-                  />
-                  <View style={styles.heroContent}>
-                    <Text style={styles.heroTag}>FEATURED #1 TRENDING</Text>
-                    <Text style={styles.heroTitle}>{heroMedia.title.toUpperCase()}</Text>
-                    <Text style={styles.heroSub}>
-                      ★ {heroMedia.rating.toFixed(1)} ({heroMedia.voteCountFormatted} REVIEWS) • {heroMedia.releaseDate}
-                    </Text>
+      {/* MAIN CONTENT AREA */}
+      <View style={{ flex: 1 }}>
+        {isSearchActive ? (
+          <FlatList
+            data={tmdbSearchResults}
+            keyExtractor={(item) => `search-tmdb-${item.id}`}
+            numColumns={3}
+            contentContainerStyle={styles.exploreGrid}
+            columnWrapperStyle={styles.exploreGridRow}
+            renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+            ListEmptyComponent={
+              !loading ? (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>NO CATALOG RESULTS FOUND</Text>
+                </View>
+              ) : null
+            }
+          />
+        ) : subTab === 'for_you' ? (
+          /* SUBTAB 1: FOR YOU (No Floating Filter Pill) */
+          <ScrollView contentContainerStyle={styles.scrollFeedsContent} showsVerticalScrollIndicator={false}>
+            {/* Apple TV+ Full-Bleed 16:9 Hero Spotlight Carousel */}
+            {heroMedia && (
+              <View style={styles.heroContainer}>
+                <Image source={{ uri: heroMedia.backdropUrl || heroMedia.posterUrl }} style={styles.heroImage} />
+                <LinearGradient
+                  colors={['transparent', 'rgba(10,10,12,0.85)', '#0A0A0C']}
+                  style={styles.heroGradient}
+                />
+                <View style={styles.heroContent}>
+                  <Text style={styles.heroTag}>SPOTLIGHT #1 PICK</Text>
+                  <Text style={styles.heroTitle}>{heroMedia.title.toUpperCase()}</Text>
+                  <Text style={styles.heroSub}>
+                    ★ {heroMedia.rating ? heroMedia.rating.toFixed(1) : '8.5'} • {heroMedia.releaseDate || '2026'}
+                  </Text>
+                  <View style={styles.heroActionRow}>
                     <TouchableOpacity
                       style={[styles.heroPlayButton, { backgroundColor: accentColor }]}
                       onPress={() => handleWatchStream(heroMedia)}
+                      activeOpacity={0.8}
                     >
-                      <Text style={styles.heroPlayText}>▶ WATCH STREAM</Text>
+                      <Text style={styles.heroPlayText}>▶ STREAM NOW</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.heroBookmarkBtn}
+                      onPress={() => toggleWatchlist({ id: heroMedia.id, title: heroMedia.title, posterUrl: heroMedia.posterUrl, mediaType: heroMedia.mediaType || 'movie' })}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons
+                        name={watchlist.some(i => i.id === heroMedia.id) ? "bookmark" : "bookmark-outline"}
+                        size={18}
+                        color="#FFF"
+                      />
                     </TouchableOpacity>
                   </View>
                 </View>
-              )}
+              </View>
+            )}
 
-              {feedsLoading && (
-                <ActivityIndicator size="small" color={accentColor} style={styles.feedSpinner} />
-              )}
-
+            {/* Continue Watching Rail (Shows if history exists) */}
+            {clickHistoryTMDB.length > 0 && (
               <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>FOR YOU (PERSONALIZED)</Text>
+                <Text style={styles.laneTitle}>CONTINUE WATCHING</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {forYouFeed.length > 0 ? (
-                    forYouFeed.map(item => {
-                      const type = 'rating' in item && item.rating > 10 ? 'anime' : ('mediaType' in item ? item.mediaType : 'movie');
-                      return renderFeedCard(item, type, 'all');
-                    })
-                  ) : (
-                    <Text style={styles.laneEmptyText}>NO HISTORY YET. WATCH OR SEARCH ITEMS TO POPULATE.</Text>
-                  )}
+                  {forYouFeed.slice(0, 8).map(item => {
+                    const type = 'mediaType' in item ? item.mediaType : 'movie';
+                    return renderFeedCard(item, type as any, 'all');
+                  })}
                 </ScrollView>
               </View>
+            )}
 
-              <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>TRENDING HOLLYWOOD MOVIES</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {tmdbKey ? (
-                    trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))
-                  ) : (
-                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
-                  )}
-                </ScrollView>
-              </View>
+            {/* Personalized Recommendation Feed */}
+            <View style={styles.feedLane}>
+              <Text style={styles.laneTitle}>BASED ON YOUR SWIPES & TASTE</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                {forYouFeed.length > 0 ? (
+                  forYouFeed.map(item => {
+                    const type = 'rating' in item && item.rating > 10 ? 'anime' : ('mediaType' in item ? item.mediaType : 'movie');
+                    return renderFeedCard(item, type, 'all');
+                  })
+                ) : (
+                  <Text style={styles.laneEmptyText}>NO HISTORY YET. SWIPE CARDS OR WATCH MEDIA TO POPULATE.</Text>
+                )}
+              </ScrollView>
+            </View>
 
-              <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>TRENDING WEB SERIES & TV SHOWS</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {tmdbKey ? (
-                    trendingTV.map(item => renderFeedCard(item, 'tv', 'hollywood'))
-                  ) : (
-                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD TV LANES.</Text>
-                  )}
-                </ScrollView>
-              </View>
+            {/* Trending Hollywood Movies */}
+            <View style={styles.feedLane}>
+              <Text style={styles.laneTitle}>TRENDING HOLLYWOOD MOVIES</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                {trendingHollywood.map(item => renderFeedCard(item, 'movie', 'hollywood'))}
+              </ScrollView>
+            </View>
 
-              <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {tmdbKey ? (
-                    bollywoodHits.map(item => renderFeedCard(item, 'movie', 'bollywood'))
-                  ) : (
-                    <Text style={styles.laneEmptyText}>ADD TMDB KEY IN SETTINGS TO LOAD MOVIE LANES.</Text>
-                  )}
-                </ScrollView>
-              </View>
+            {/* Trending TV Series */}
+            <View style={styles.feedLane}>
+              <Text style={styles.laneTitle}>TRENDING TV SHOWS & SERIES</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                {trendingTV.map(item => renderFeedCard(item, 'tv', 'hollywood'))}
+              </ScrollView>
+            </View>
 
-              <View style={styles.feedLane}>
-                <Text style={styles.laneTitle}>TRENDING ANIME</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
-                  {trendingAnime.map(item => renderFeedCard(item, 'anime', 'anime'))}
-                </ScrollView>
-              </View>
+            {/* Bollywood Hits */}
+            <View style={styles.feedLane}>
+              <Text style={styles.laneTitle}>BOLLYWOOD HIGHLIGHTS</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                {bollywoodHits.map(item => renderFeedCard(item, 'movie', 'bollywood'))}
+              </ScrollView>
+            </View>
+
+            {/* AniList Anime */}
+            <View style={styles.feedLane}>
+              <Text style={styles.laneTitle}>TRENDING ANIME</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                {trendingAnime.map(item => renderFeedCard(item, 'anime', 'anime'))}
+              </ScrollView>
+            </View>
+          </ScrollView>
+        ) : (
+          /* SUBTAB 2: EXPLORE (With Floating Filter Pill Exclusively) */
+          <View style={{ flex: 1 }}>
+            {/* Quick Category & Preset Chips Bar */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.exploreChipsRow}>
+              {[
+                { label: 'ALL', filter: { mediaType: 'both', selectedLanguage: 'all', selectedYear: 'all', selectedOtts: [], selectedGenres: [], minRating: 0, sortBy: 'popularity.desc' } },
+                { label: 'MOVIES', filter: { mediaType: 'movie', selectedLanguage: 'all', selectedYear: 'all', selectedOtts: [], selectedGenres: [], minRating: 0, sortBy: 'popularity.desc' } },
+                { label: 'SERIES', filter: { mediaType: 'tv', selectedLanguage: 'all', selectedYear: 'all', selectedOtts: [], selectedGenres: [], minRating: 0, sortBy: 'popularity.desc' } },
+                { label: 'ANIME', filter: { mediaType: 'anime', selectedLanguage: 'ja', selectedYear: 'all', selectedOtts: [], selectedGenres: [16], minRating: 0, sortBy: 'popularity.desc' } },
+                { label: 'BOLLYWOOD', filter: { mediaType: 'both', selectedLanguage: 'hi', selectedYear: 'all', selectedOtts: [], selectedGenres: [], minRating: 0, sortBy: 'popularity.desc' } },
+                { label: '★ 8.0+ TOP RATED', filter: { mediaType: 'both', selectedLanguage: 'all', selectedYear: 'all', selectedOtts: [], selectedGenres: [], minRating: 8.0, sortBy: 'vote_average.desc' } },
+                { label: '2026 LATEST', filter: { mediaType: 'both', selectedLanguage: 'all', selectedYear: '2026', selectedOtts: [], selectedGenres: [], minRating: 0, sortBy: 'popularity.desc' } },
+              ].map((chip, idx) => {
+                const isActive = activeFilters && activeFilters.mediaType === chip.filter.mediaType && activeFilters.selectedLanguage === chip.filter.selectedLanguage && activeFilters.minRating === chip.filter.minRating;
+                return (
+                  <TouchableOpacity
+                    key={`preset-${idx}`}
+                    style={[styles.presetChip, isActive && styles.presetChipActive]}
+                    onPress={() => {
+                      const f = chip.filter as FilterOptions;
+                      setActiveFilters(f);
+                      loadExploreData(f);
+                    }}
+                  >
+                    <Text style={[styles.presetChipText, isActive && styles.presetChipTextActive]}>
+                      {chip.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
-          )}
 
-          {/* Filter Drawer Modal */}
-          <FilterDrawerModal
-            visible={filterDrawerVisible}
-            onClose={() => setFilterDrawerVisible(false)}
-            onApplyFilters={(filters) => {
-              // Apply filters to query / discover
-              if (filters.selectedGenres.length > 0) {
-                discoverMediaByGenre(filters.selectedGenres[0], 1, undefined, filters.sortBy, filters.mediaType === 'tv' ? 'tv' : 'movie')
-                  .then(results => {
-                    setTmdbSearchResults(results);
-                    setIsSearchActive(true);
-                  });
-              }
-            }}
-          />
-        </View>
+            {/* Active Filter HUD Bar */}
+            {activeFilters && (
+              <View style={styles.activeFilterHud}>
+                <Text style={styles.activeFilterHudText}>
+                  ACTIVE: {activeFilters.mediaType.toUpperCase()} • {activeFilters.selectedLanguage.toUpperCase()} {activeFilters.minRating > 0 ? `• ★ ${activeFilters.minRating}+` : ''}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setActiveFilters(null);
+                    loadExploreData(null);
+                  }}
+                >
+                  <Text style={styles.hudClearText}>CLEAR</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* 3-Column Explore Grid */}
+            {exploreLoading ? (
+              <View style={styles.skeletonGrid}>
+                {Array.from({ length: 9 }).map((_, idx) => (
+                  <SkeletonCard key={`skel-${idx}`} />
+                ))}
+              </View>
+            ) : (
+              <FlatList
+                data={exploreMedia}
+                keyExtractor={(item) => `explore-${item.id}`}
+                numColumns={3}
+                contentContainerStyle={styles.exploreGrid}
+                columnWrapperStyle={styles.exploreGridRow}
+                renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+                ListEmptyComponent={
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>NO CONTENT MATCHES CURRENT FILTERS</Text>
+                  </View>
+                }
+              />
+            )}
+          </View>
+        )}
+      </View>
+
+      {/* Floating Dynamic Island Filter Pill (Rendered EXCLUSIVELY on EXPLORE Sub-Tab) */}
+      {subTab === 'explore' && (
+        <TouchableOpacity
+          style={[styles.floatingFilterPill, { bottom: 16 + insets.bottom }]}
+          onPress={() => setFilterDrawerVisible(true)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="options-outline" size={16} color="#FF2D55" />
+          <Text style={styles.floatingFilterText}>
+            FILTER & DISCOVER {activeFilterCount > 0 ? `(${activeFilterCount})` : ''}
+          </Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Filter Drawer Modal */}
+      <FilterDrawerModal
+        visible={filterDrawerVisible}
+        initialFilters={activeFilters || undefined}
+        onClose={() => setFilterDrawerVisible(false)}
+        onApplyFilters={(filters) => {
+          setActiveFilters(filters);
+          setSubTab('explore');
+          loadExploreData(filters);
+        }}
+      />
 
       {/* YouTube-Style Player Modal Component */}
       <VideoPlayerModal
@@ -1175,16 +1362,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0C',
   },
-  header: {
+  headerRow: {
     paddingHorizontal: 20,
-    paddingTop: 45,
-    paddingBottom: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-    backgroundColor: '#0A0A0C'
+    backgroundColor: 'transparent',
   },
   brandTitle: {
     fontFamily: 'Ndot57',
@@ -1210,6 +1395,256 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: 'rgba(255, 255, 255, 0.4)',
     letterSpacing: 1,
+  },
+  glassSubTabCapsuleRow: {
+    marginHorizontal: 16,
+    marginVertical: 6,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 24,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  glassSubTabBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  glassSubTabBtnActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+  },
+  glassSubTabText: {
+    fontFamily: 'System',
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: 'rgba(255, 255, 255, 0.5)',
+    letterSpacing: 1,
+  },
+  glassSubTabTextActive: {
+    color: '#FFFFFF',
+  },
+  exploreChipsRow: {
+    height: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    gap: 8,
+    alignItems: 'center',
+  },
+  presetChip: {
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  presetChipActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  presetChipText: {
+    fontFamily: 'System',
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: 'rgba(255, 255, 255, 0.5)',
+    letterSpacing: 0.5,
+  },
+  presetChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  headerSearchBtn: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  searchOverlayContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0A0C',
+    zIndex: 9999,
+    paddingTop: 45,
+  },
+  searchOverlayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  searchOverlayBackBtn: {
+    padding: 6,
+    marginRight: 8,
+  },
+  searchOverlayInput: {
+    flex: 1,
+    height: 44,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    color: '#FFFFFF',
+    fontFamily: 'LetteraMono',
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  searchOverlayClearBtn: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  recentHistorySection: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  recentHistoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  recentHistoryTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    letterSpacing: 1.5,
+  },
+  clearAllHistoryText: {
+    fontFamily: 'System',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FF2D55',
+    letterSpacing: 1,
+  },
+  recentHistoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  recentHistoryTextContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  recentHistoryItemText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 12,
+    color: '#FFFFFF',
+  },
+  removeHistoryItemBtn: {
+    padding: 6,
+  },
+  emptyHistoryText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.3)',
+    marginTop: 20,
+  },
+  suggestionsList: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  suggestionTitleText: {
+    fontFamily: 'Ndot57',
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  suggestionSubText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 2,
+  },
+  floatingFilterPill: {
+    position: 'absolute',
+    bottom: 24,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(18, 18, 24, 0.94)',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#FF2D55',
+    elevation: 12,
+    zIndex: 9999,
+  },
+  floatingFilterText: {
+    fontFamily: 'System',
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    letterSpacing: 1.2,
+  },
+  heroActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 8,
+  },
+  heroBookmarkBtn: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  activeFilterHud: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(255, 45, 85, 0.08)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 45, 85, 0.2)',
+  },
+  activeFilterHudText: {
+    fontFamily: 'System',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FF2D55',
+    letterSpacing: 1,
+  },
+  hudClearText: {
+    fontFamily: 'System',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  skeletonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 16,
+    justifyContent: 'space-between',
   },
   tabContent: {
     flex: 1,
@@ -1361,7 +1796,16 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   scrollFeedsContent: {
-    paddingBottom: 30,
+    paddingBottom: 90,
+  },
+  exploreGrid: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 90,
+  },
+  exploreGridRow: {
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
   heroContainer: {
     position: 'relative',
@@ -1572,14 +2016,6 @@ const styles = StyleSheet.create({
     fontFamily: 'LetteraMono',
     fontSize: 10,
     letterSpacing: 0.5,
-  },
-  exploreGrid: {
-    paddingHorizontal: 20,
-    paddingBottom: 30,
-  },
-  exploreGridRow: {
-    justifyContent: 'space-between',
-    marginBottom: 16,
   },
   settingsContent: {
     paddingHorizontal: 20,

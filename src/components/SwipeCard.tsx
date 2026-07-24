@@ -262,11 +262,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   title: {
+    fontFamily: 'Ndot57',
     fontSize: 22,
-    fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 10,
-    letterSpacing: 0.2,
+    letterSpacing: 1,
   },
   pillRow: {
     flexDirection: 'row',

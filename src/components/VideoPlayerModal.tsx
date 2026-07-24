@@ -131,7 +131,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setCurrentEpisode(1);
     setShowTroubleshoot(false);
     setDebugLogs([]);
-    setActiveUrl(null); // Don't auto-resolve on open; show poster first
+    setActiveUrl(null); // Land on poster preview & details first; user taps server or play to stream
 
     if (visible && mediaItem) {
       addLog(`Opened media: "${mediaItem.title || title}" (TMDB ID: ${mediaItem.id})`);
@@ -442,15 +442,19 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   <Text style={styles.streamActionText}>▶ STREAM NOW</Text>
                 </TouchableOpacity>
 
-                {onDownloadPress && (
-                  <TouchableOpacity
-                    style={styles.downloadActionButton}
-                    onPress={() => onDownloadPress(currentSeason)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.downloadActionText}>↓ DOWNLOAD</Text>
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  style={styles.downloadActionButton}
+                  onPress={() => {
+                    if (onDownloadPress) {
+                      onDownloadPress(currentSeason);
+                    } else {
+                      addLog(`Download pressed for ${mediaItem?.title || title} (Season ${currentSeason})`);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.downloadActionText}>↓ DOWNLOAD</Text>
+                </TouchableOpacity>
               </View>
 
               <Text style={styles.overviewText}>{mediaItem.overview || 'NO OVERVIEW AVAILABLE.'}</Text>

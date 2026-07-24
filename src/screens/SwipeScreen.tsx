@@ -195,7 +195,6 @@ export default function SwipeScreen() {
       <View style={styles.header}>
         {/* Brand row */}
         <View style={styles.brandRow}>
-          <Ionicons name="flame" size={18} color="#FF2D55" />
           <Text style={styles.brandText}>MOVIE TINDER</Text>
           <TouchableOpacity style={styles.infoBtn} onPress={showGuide}>
             <Ionicons name="help-circle-outline" size={16} color="rgba(255,255,255,0.55)" />
@@ -325,7 +324,7 @@ export default function SwipeScreen() {
             disabled={swipedHistory.length === 0}
           >
             <Ionicons
-              name="refresh-outline"
+              name="play-back"
               size={22}
               color={swipedHistory.length > 0 ? '#FFF' : 'rgba(255,255,255,0.25)'}
             />
@@ -346,6 +345,7 @@ export default function SwipeScreen() {
       {/* ── Modals ── */}
       <FilterDrawerModal
         visible={filterVisible}
+        initialFilters={activeFilters || undefined}
         onClose={() => setFilterVisible(false)}
         onApplyFilters={(filters) => {
           setActiveFilters(filters);

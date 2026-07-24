@@ -7,9 +7,9 @@ import {
   StyleSheet,
   ScrollView,
   Image,
-  SafeAreaView,
   Dimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { TMDBMediaItem, getMediaCredits, CastMember } from '../utils/tmdb';
@@ -145,7 +145,7 @@ export const SwiparrDetailSheet: React.FC<SwiparrDetailSheetProps> = ({
                   }}
                 >
                   <Ionicons name="open-outline" size={18} color="#FFFFFF" />
-                  <Text style={styles.seeMoreText}>↗ SEE MORE & STREAM NOW</Text>
+                  <Text style={styles.seeMoreText}>MORE</Text>
                 </TouchableOpacity>
 
                 {/* Director & Language Row */}

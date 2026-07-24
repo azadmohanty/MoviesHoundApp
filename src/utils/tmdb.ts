@@ -313,48 +313,83 @@ export const discoverMediaWithFilters = async (filters: {
 }): Promise<TMDBMediaItem[]> => {
   try {
     const config = await getTMDBConfig();
-    const endpointType = filters.mediaType === 'tv' || filters.mediaType === 'anime' ? 'tv' : 'movie';
 
-    const params: Record<string, string> = {
-      sort_by: filters.sortBy || 'popularity.desc',
-      'vote_count.gte': '20',
-    };
+    const buildParams = (endpointType: 'movie' | 'tv') => {
+      const params: Record<string, string> = {
+        sort_by: filters.sortBy || 'popularity.desc',
+        'vote_count.gte': '5',
+      };
 
-    if (filters.minRating && filters.minRating > 0) {
-      params['vote_average.gte'] = filters.minRating.toString();
-    }
+      if (filters.minRating && filters.minRating > 0) {
+        params['vote_average.gte'] = filters.minRating.toString();
+      }
 
-    if (filters.selectedLanguage && filters.selectedLanguage !== 'all') {
-      params['with_original_language'] = filters.selectedLanguage;
-    }
+      if (filters.selectedLanguage && filters.selectedLanguage !== 'all') {
+        params['with_original_language'] = filters.selectedLanguage;
+      }
 
-    if (filters.mediaType === 'anime') {
-      params['with_genres'] = '16'; // Animation
-      params['with_original_language'] = 'ja'; // Japanese
-    } else if (filters.selectedGenres && filters.selectedGenres.length > 0) {
-      params['with_genres'] = filters.selectedGenres.join(',');
-    }
+      if (filters.mediaType === 'anime') {
+        params['with_genres'] = '16'; // Animation
+        params['with_original_language'] = 'ja'; // Japanese
+      } else if (filters.selectedGenres && filters.selectedGenres.length > 0) {
+        params['with_genres'] = filters.selectedGenres.join(',');
+      }
 
-    if (filters.selectedYear && filters.selectedYear !== 'all') {
-      if (filters.selectedYear === '2020s') {
-        params['primary_release_date.gte'] = '2020-01-01';
-        params['primary_release_date.lte'] = '2029-12-31';
-      } else if (filters.selectedYear === '2010s') {
-        params['primary_release_date.gte'] = '2010-01-01';
-        params['primary_release_date.lte'] = '2019-12-31';
-      } else {
-        if (endpointType === 'movie') {
-          params['primary_release_year'] = filters.selectedYear;
+      if (filters.selectedYear && filters.selectedYear !== 'all') {
+        if (filters.selectedYear === '2020s') {
+          const fieldGte = endpointType === 'movie' ? 'primary_release_date.gte' : 'first_air_date.gte';
+          const fieldLte = endpointType === 'movie' ? 'primary_release_date.lte' : 'first_air_date.lte';
+          params[fieldGte] = '2020-01-01';
+          params[fieldLte] = '2029-12-31';
+        } else if (filters.selectedYear === '2010s') {
+          const fieldGte = endpointType === 'movie' ? 'primary_release_date.gte' : 'first_air_date.gte';
+          const fieldLte = endpointType === 'movie' ? 'primary_release_date.lte' : 'first_air_date.lte';
+          params[fieldGte] = '2010-01-01';
+          params[fieldLte] = '2019-12-31';
         } else {
-          params['first_air_date_year'] = filters.selectedYear;
+          if (endpointType === 'movie') {
+            params['primary_release_year'] = filters.selectedYear;
+          } else {
+            params['first_air_date_year'] = filters.selectedYear;
+          }
         }
       }
+      return params;
+    };
+
+    let items: TMDBMediaItem[] = [];
+
+    if (filters.mediaType === 'both') {
+      const [movieData, tvData] = await Promise.all([
+        fetchFromTMDB('/discover/movie', buildParams('movie')),
+        fetchFromTMDB('/discover/tv', buildParams('tv')),
+      ]);
+      const movieItems = (movieData.results || []).map((item: any) =>
+        mapMediaItem(item, 'movie', config.imageBase)
+      );
+      const tvItems = (tvData.results || []).map((item: any) =>
+        mapMediaItem(item, 'tv', config.imageBase)
+      );
+      items = [];
+      const maxLen = Math.max(movieItems.length, tvItems.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (i < movieItems.length) items.push(movieItems[i]);
+        if (i < tvItems.length) items.push(tvItems[i]);
+      }
+    } else {
+      const endpointType = filters.mediaType === 'tv' || filters.mediaType === 'anime' ? 'tv' : 'movie';
+      const data = await fetchFromTMDB(`/discover/${endpointType}`, buildParams(endpointType));
+      items = (data.results || []).map((item: any) =>
+        mapMediaItem(item, endpointType as 'movie' | 'tv', config.imageBase)
+      );
     }
 
-    const data = await fetchFromTMDB(`/discover/${endpointType}`, params);
-    return (data.results || []).map((item: any) =>
-      mapMediaItem(item, endpointType as 'movie' | 'tv', config.imageBase)
-    );
+    // Client-side Filter Verification
+    if (filters.minRating && filters.minRating > 0) {
+      items = items.filter(i => i.rating >= (filters.minRating || 0));
+    }
+
+    return items;
   } catch (e) {
     console.warn('Failed discovering filtered media from TMDB:', e);
     return [];
