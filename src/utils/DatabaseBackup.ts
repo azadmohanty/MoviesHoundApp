@@ -265,16 +265,25 @@ export async function importCombinedBackup(): Promise<{ success: boolean; messag
     let DocumentPicker: any = null;
     try {
       DocumentPicker = require('expo-document-picker');
+      if (!DocumentPicker || typeof DocumentPicker.getDocumentAsync !== 'function') {
+        return { success: false, message: 'NATIVE_PICKER_UNAVAILABLE' };
+      }
     } catch {
       return { success: false, message: 'NATIVE_PICKER_UNAVAILABLE' };
     }
 
-    const result = await DocumentPicker.getDocumentAsync({
-      type: 'application/json',
-      copyToCacheDirectory: true,
-    });
+    let result: any = null;
+    try {
+      result = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true,
+      });
+    } catch (e: any) {
+      console.warn('[DatabaseBackup] DocumentPicker execution error:', e);
+      return { success: false, message: 'NATIVE_PICKER_UNAVAILABLE' };
+    }
 
-    if (result.canceled || !result.assets || result.assets.length === 0) {
+    if (!result || result.canceled || !result.assets || result.assets.length === 0) {
       return { success: false, message: 'Import cancelled' };
     }
 
