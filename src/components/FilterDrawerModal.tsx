@@ -181,7 +181,7 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
                         mediaType === type && styles.chipTextActive,
                       ]}
                     >
-                      {type === 'both' ? 'ALL' : type === 'movie' ? 'MOVIES' : type === 'tv' ? 'SERIES' : 'ANIME ⛩️'}
+                      {type === 'both' ? 'ALL' : type === 'movie' ? 'MOVIES' : type === 'tv' ? 'SERIES' : 'ANIME'}
                     </Text>
                   </TouchableOpacity>
                 ))}

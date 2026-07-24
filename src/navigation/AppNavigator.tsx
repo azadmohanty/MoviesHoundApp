@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from '../screens/HomeScreen';
 import SwipeScreen from '../screens/SwipeScreen';
@@ -11,6 +12,7 @@ export type TabType = 'home' | 'swipe' | 'downloader' | 'me';
 export default function AppNavigator() {
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [downloaderQuery, setDownloaderQuery] = useState<string>('');
+  const insets = useSafeAreaInsets();
 
   const handleNavigateToDownloader = (query: string) => {
     setDownloaderQuery(query);
@@ -32,12 +34,14 @@ export default function AppNavigator() {
     }
   };
 
+  const bottomPadding = Math.max(insets.bottom, 10);
+
   return (
     <View style={styles.container}>
       <View style={styles.screenContainer}>{renderActiveScreen()}</View>
 
-      {/* Bottom Tab Bar */}
-      <View style={styles.tabBar}>
+      {/* Bottom Tab Bar with YouTube-style safe bottom margin */}
+      <View style={[styles.tabBar, { paddingBottom: bottomPadding, height: 52 + bottomPadding }]}>
         {/* Tab 1: HOME */}
         <TouchableOpacity
           style={styles.tabItem}
@@ -57,7 +61,6 @@ export default function AppNavigator() {
           >
             HOME
           </Text>
-          {activeTab === 'home' && <View style={styles.activeDot} />}
         </TouchableOpacity>
 
         {/* Tab 2: SWIPE */}
@@ -79,7 +82,6 @@ export default function AppNavigator() {
           >
             SWIPE
           </Text>
-          {activeTab === 'swipe' && <View style={styles.activeDot} />}
         </TouchableOpacity>
 
         {/* Tab 3: DOWNLOADER */}
@@ -101,7 +103,6 @@ export default function AppNavigator() {
           >
             DOWNLOAD
           </Text>
-          {activeTab === 'downloader' && <View style={[styles.activeDot, { backgroundColor: '#FFE500' }]} />}
         </TouchableOpacity>
 
         {/* Tab 4: ME */}
@@ -123,7 +124,6 @@ export default function AppNavigator() {
           >
             ME
           </Text>
-          {activeTab === 'me' && <View style={styles.activeDot} />}
         </TouchableOpacity>
       </View>
     </View>

@@ -11,6 +11,24 @@ export interface TasteProfile {
 }
 
 const TASTE_KEY = '@user_taste_profile';
+const PERSISTED_LIKES_KEY = '@movie_tinder_liked_items';
+
+export async function getPersistedLikedItems(): Promise<TMDBMediaItem[]> {
+  try {
+    const raw = await AsyncStorage.getItem(PERSISTED_LIKES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function savePersistedLikedItems(items: TMDBMediaItem[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(PERSISTED_LIKES_KEY, JSON.stringify(items));
+  } catch (err) {
+    console.error('Failed to persist liked items:', err);
+  }
+}
 
 const INITIAL_PROFILE: TasteProfile = {
   genreWeights: {},
@@ -72,6 +90,14 @@ export async function recordUserAction(
     profile.likedIds.push(item.id);
   } else if (action === 'disliked' && !profile.dislikedIds.includes(item.id)) {
     profile.dislikedIds.push(item.id);
+  }
+
+  // Persist full item for offline recovery
+  if (action === 'loved' || action === 'liked') {
+    const existingLikes = await getPersistedLikedItems();
+    if (!existingLikes.some(i => i.id === item.id)) {
+      await savePersistedLikedItems([item, ...existingLikes]);
+    }
   }
 
   await saveTasteProfile(profile);
