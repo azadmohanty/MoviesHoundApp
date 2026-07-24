@@ -9,7 +9,7 @@ export const ROTATORS = {
   animeflix: "https://modlist.in/?type=animeflix"
 };
 
-const CACHE_KEY = '@movieshound_domains_cache';
+const CACHE_KEY = '@domains_cache';
 const CACHE_EXPIRY_MS = 6 * 60 * 60 * 1000; // 6 hours
 const GITHUB_DOMAINS_URL = 'https://raw.githubusercontent.com/azadmohanty/MoviesHoundApp/main/domains.json';
 

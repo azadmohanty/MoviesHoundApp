@@ -166,10 +166,10 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  const removeRecentSearch = async (term: string) => {
+  const removeRecentSearchTerm = async (term: string) => {
     try {
       const updated = recentSearches.filter(t => t !== term);
-      await AsyncStorage.setItem('@movieshound_recent_searches', JSON.stringify(updated));
+      await AsyncStorage.setItem(STORAGE_KEYS.RECENT_SEARCHES, JSON.stringify(updated));
       setRecentSearches(updated);
     } catch (e) {
       console.warn('Failed removing search term:', e);
@@ -178,7 +178,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
   const clearAllRecentSearches = async () => {
     try {
-      await AsyncStorage.removeItem('@movieshound_recent_searches');
+      await AsyncStorage.removeItem(STORAGE_KEYS.RECENT_SEARCHES);
       setRecentSearches([]);
     } catch (e) {
       console.warn('Failed clearing search history:', e);
@@ -491,12 +491,12 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     try {
       if (mediaType === 'anime') {
         let history = [id, ...clickHistoryAnime.filter(x => x !== id)].slice(0, 10);
-        await AsyncStorage.setItem('@movieshound_history_clicks_anilist', JSON.stringify(history));
+        await AsyncStorage.setItem('@history_clicks_anilist', JSON.stringify(history));
         setClickHistoryAnime(history);
       } else {
         const entry = { id, type: mediaType };
         let history = [entry, ...clickHistoryTMDB.filter(x => x.id !== id)].slice(0, 10);
-        await AsyncStorage.setItem('@movieshound_history_clicks_tmdb', JSON.stringify(history));
+        await AsyncStorage.setItem('@history_clicks_tmdb', JSON.stringify(history));
         setClickHistoryTMDB(history);
       }
     } catch (e) {
@@ -537,11 +537,11 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const updateSetting = async (key: string, value: string) => {
     try {
       await AsyncStorage.setItem(key, value);
-      if (key === '@movieshound_tmdb_key') setTmdbKey(value);
-      else if (key === '@movieshound_tmdb_proxy_enabled') setProxyEnabled(value === 'true');
-      else if (key === '@movieshound_tmdb_proxy_api') setCustomApi(value);
-      else if (key === '@movieshound_tmdb_proxy_image') setCustomImage(value);
-      else if (key === '@movieshound_accent_color') setAccentColor(value);
+      if (key === STORAGE_KEYS.TMDB_KEY) setTmdbKey(value);
+      else if (key === STORAGE_KEYS.PROXY_ENABLED) setProxyEnabled(value === 'true');
+      else if (key === STORAGE_KEYS.PROXY_API) setCustomApi(value);
+      else if (key === STORAGE_KEYS.PROXY_IMAGE) setCustomImage(value);
+      else if (key === STORAGE_KEYS.ACCENT_COLOR) setAccentColor(value);
     } catch (e) {
       console.warn('Failed saving setting:', e);
     }
@@ -566,8 +566,8 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   };
 
   const clearHistory = async () => {
-    await AsyncStorage.removeItem('@movieshound_history_clicks_tmdb');
-    await AsyncStorage.removeItem('@movieshound_history_clicks_anilist');
+    await AsyncStorage.removeItem('@history_clicks_tmdb');
+    await AsyncStorage.removeItem('@history_clicks_anilist');
     setClickHistoryTMDB([]);
     setClickHistoryAnime([]);
     loadFeeds();
@@ -971,7 +971,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
                       <TouchableOpacity
                         style={styles.removeHistoryItemBtn}
-                        onPress={() => removeRecentSearch(term)}
+                        onPress={() => removeRecentSearchTerm(term)}
                       >
                         <Ionicons name="close" size={16} color="rgba(255,255,255,0.3)" />
                       </TouchableOpacity>

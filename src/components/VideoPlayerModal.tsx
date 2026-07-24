@@ -232,9 +232,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       window.confirm = function() { return true; };
 
       const injectCssAdBlocker = () => {
-        if (document.getElementById('movieshound-adblock-styles')) return;
+        if (document.getElementById('hologram-adblock-styles')) return;
         const style = document.createElement('style');
-        style.id = 'movieshound-adblock-styles';
+        style.id = 'hologram-adblock-styles';
         style.innerHTML = \`
           iframe[src*="ads"], iframe[src*="pop"], iframe[src*="doubleclick"],
           div[class*="ad-"], div[class*="ads-"], div[id*="pop-"], div[id*="ad-banner"],

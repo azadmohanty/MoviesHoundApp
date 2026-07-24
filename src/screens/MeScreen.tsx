@@ -474,7 +474,7 @@ export default function MeScreen() {
                     { borderColor: color },
                     accentColor === color && { backgroundColor: color },
                   ]}
-                  onPress={() => updateSetting('@movieshound_accent_color', color)}
+                  onPress={() => updateSetting(STORAGE_KEYS.ACCENT_COLOR, color)}
                 >
                   <Text
                     style={[
@@ -497,7 +497,7 @@ export default function MeScreen() {
               <TextInput
                 style={styles.textInput}
                 value={tmdbKey}
-                onChangeText={(val) => updateSetting('@movieshound_tmdb_key', val)}
+                onChangeText={(val) => updateSetting(STORAGE_KEYS.TMDB_KEY, val)}
                 placeholder="Enter API Key..."
                 placeholderTextColor="rgba(255,255,255,0.3)"
                 secureTextEntry={true}
@@ -514,7 +514,7 @@ export default function MeScreen() {
               <Switch
                 value={proxyEnabled}
                 onValueChange={(val) =>
-                  updateSetting('@movieshound_tmdb_proxy_enabled', val ? 'true' : 'false')
+                  updateSetting(STORAGE_KEYS.PROXY_ENABLED, val ? 'true' : 'false')
                 }
                 trackColor={{ false: '#1E1E24', true: accentColor }}
                 thumbColor="#FFFFFF"

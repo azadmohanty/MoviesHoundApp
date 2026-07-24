@@ -94,29 +94,60 @@ export async function createBackupPayload(): Promise<BackupPayload> {
 
 export async function exportCombinedBackup(): Promise<{ success: boolean; message: string }> {
   try {
-    let Sharing: any = null;
-    try {
-      Sharing = require('expo-sharing');
-    } catch {
-      return { success: false, message: 'NATIVE_SHARING_UNAVAILABLE' };
-    }
-
     const payload = await createBackupPayload();
     const jsonString = JSON.stringify(payload, null, 2);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const fileName = `hologram_backup_${dateStr}.json`;
 
-    const isAvailable = await Sharing.isAvailableAsync();
-    if (!isAvailable) {
-      return { success: false, message: 'Sharing is not available on this device.' };
+    let fileUri: string | null = null;
+    try {
+      const FileSystem = require('expo-file-system');
+      const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (dir) {
+        fileUri = `${dir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, jsonString, {
+          encoding: FileSystem.EncodingType ? FileSystem.EncodingType.UTF8 : 'utf8'
+        });
+      }
+    } catch (e) {
+      console.warn('[DatabaseBackup] Could not create local .json file:', e);
     }
 
-    const uri = `data:application/json;charset=utf-8,${encodeURIComponent(jsonString)}`;
-    await Sharing.shareAsync(uri, {
-      dialogTitle: 'Export HoloGram Backup',
-      mimeType: 'application/json',
-      UTI: 'public.json',
-    });
+    // 1. Try Expo Sharing with physical .json file URI
+    if (fileUri) {
+      try {
+        const Sharing = require('expo-sharing');
+        if (Sharing && await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            dialogTitle: 'Export HoloGram Backup (.json)',
+            mimeType: 'application/json',
+            UTI: 'public.json',
+          });
+          return { success: true, message: 'Backup exported as .json file!' };
+        }
+      } catch (e) {
+        console.warn('[DatabaseBackup] expo-sharing with fileUri failed:', e);
+      }
+    }
 
-    return { success: true, message: 'Backup exported successfully!' };
+    // 2. Try React Native built-in Share API with fileUri or json payload
+    try {
+      const { Share } = require('react-native');
+      if (Share && typeof Share.share === 'function') {
+        const shareOptions = fileUri
+          ? { url: fileUri, title: fileName }
+          : { title: fileName, message: jsonString };
+        const res = await Share.share(shareOptions);
+        if (res.action !== Share.dismissedAction) {
+          return { success: true, message: 'Backup exported successfully!' };
+        }
+        return { success: true, message: 'Export completed.' };
+      }
+    } catch (e) {
+      console.warn('[DatabaseBackup] React Native Share fallback failed:', e);
+    }
+
+    return { success: false, message: 'NATIVE_SHARING_UNAVAILABLE' };
   } catch (error: any) {
     return { success: false, message: error.message || 'Export failed.' };
   }
@@ -124,13 +155,6 @@ export async function exportCombinedBackup(): Promise<{ success: boolean; messag
 
 export async function exportSingleList(listKey: string, listName: string, data: any[]): Promise<{ success: boolean; message: string }> {
   try {
-    let Sharing: any = null;
-    try {
-      Sharing = require('expo-sharing');
-    } catch {
-      return { success: false, message: 'NATIVE_SHARING_UNAVAILABLE' };
-    }
-
     const jsonString = JSON.stringify({
       listName,
       exportedAt: new Date().toISOString(),
@@ -138,19 +162,51 @@ export async function exportSingleList(listKey: string, listName: string, data: 
       items: data,
     }, null, 2);
 
-    const isAvailable = await Sharing.isAvailableAsync();
-    if (!isAvailable) {
-      return { success: false, message: 'Sharing is not available on this device.' };
+    const safeName = listName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const fileName = `hologram_${safeName}.json`;
+
+    let fileUri: string | null = null;
+    try {
+      const FileSystem = require('expo-file-system');
+      const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (dir) {
+        fileUri = `${dir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, jsonString, {
+          encoding: FileSystem.EncodingType ? FileSystem.EncodingType.UTF8 : 'utf8'
+        });
+      }
+    } catch (e) {
+      console.warn('[DatabaseBackup] Could not create list .json file:', e);
     }
 
-    const uri = `data:application/json;charset=utf-8,${encodeURIComponent(jsonString)}`;
-    await Sharing.shareAsync(uri, {
-      dialogTitle: `Export ${listName}`,
-      mimeType: 'application/json',
-      UTI: 'public.json',
-    });
+    if (fileUri) {
+      try {
+        const Sharing = require('expo-sharing');
+        if (Sharing && await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            dialogTitle: `Export ${listName} (.json)`,
+            mimeType: 'application/json',
+            UTI: 'public.json',
+          });
+          return { success: true, message: `${listName} exported as .json file!` };
+        }
+      } catch (e) {}
+    }
 
-    return { success: true, message: `${listName} exported successfully!` };
+    try {
+      const { Share } = require('react-native');
+      if (Share && typeof Share.share === 'function') {
+        const shareOptions = fileUri
+          ? { url: fileUri, title: fileName }
+          : { title: fileName, message: jsonString };
+        await Share.share(shareOptions);
+        return { success: true, message: `${listName} exported successfully!` };
+      }
+    } catch (e) {
+      console.warn('[DatabaseBackup] Share single list fallback:', e);
+    }
+
+    return { success: false, message: 'NATIVE_SHARING_UNAVAILABLE' };
   } catch (error: any) {
     return { success: false, message: error.message || 'Export failed.' };
   }

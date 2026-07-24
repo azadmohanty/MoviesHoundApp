@@ -47,14 +47,16 @@ export const formatVoteCount = (count: number): string => {
   return count.toString();
 };
 
+import { STORAGE_KEYS } from './DatabaseStorage';
+
 export const getTMDBConfig = async (): Promise<TMDBConfig> => {
-  let apiKey = await AsyncStorage.getItem('@movieshound_tmdb_key');
+  let apiKey = await AsyncStorage.getItem(STORAGE_KEYS.TMDB_KEY);
   if (!apiKey || apiKey.trim() === '') {
     apiKey = process.env.EXPO_PUBLIC_TMDB_API_KEY || ''; // Load from local .env fallback
   }
-  const proxyEnabled = await AsyncStorage.getItem('@movieshound_tmdb_proxy_enabled') === 'true';
-  const customApi = await AsyncStorage.getItem('@movieshound_tmdb_proxy_api');
-  const customImage = await AsyncStorage.getItem('@movieshound_tmdb_proxy_image');
+  const proxyEnabled = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_ENABLED) === 'true';
+  const customApi = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_API);
+  const customImage = await AsyncStorage.getItem(STORAGE_KEYS.PROXY_IMAGE);
 
   let apiBase = proxyEnabled ? (customApi || 'https://tmdb-api.wmdb.tv') : 'https://api.tmdb.org/3';
   if (proxyEnabled && !customApi) {

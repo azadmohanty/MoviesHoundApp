@@ -120,7 +120,7 @@ export const resolveStreamUrl = async (
     }
 
     // Embed Fallbacks (Servers 4, 5)
-    const domainsRaw = await AsyncStorage.getItem('@movieshound_domains_cache');
+    const domainsRaw = await AsyncStorage.getItem('@domains_cache');
     let vidsrcBase = 'https://vidsrc2.ru';
     let superembedBase = 'https://multiembed.mov';
     let vidsrctoBase = 'https://vidsrc.to';
