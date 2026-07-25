@@ -1,5 +1,6 @@
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence } from './FuzzyMatcher';
+import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
 
 const BASE_DOMAIN = 'https://bollyflix.at';
 
@@ -24,29 +25,9 @@ export async function searchBollyflix(
     });
     const html = await res.text();
 
-    const entryTitleMatches = html.matchAll(/class="[^"]*entry-title[^"]*"[\s\S]{0,200}?href="([^"]+)"[^>]*>([\s\S]{0,200}?)<\/a>/gi);
+    const articleMatches = html.matchAll(/<article[\s\S]{0,500}?href="(https?:\/\/[^"]+)"[^>]*>([\s\S]{0,200}?)<\/a>/gi);
     let count = 0;
-    for (const match of entryTitleMatches) {
-      let href = match[1];
-      const text = match[2].replace(/<[^>]+>/g, '').trim();
-      if (href.startsWith('/')) href = BASE_DOMAIN + href;
-      if (href && text) {
-        const score = calculateMatchConfidence(query, text, queryYear);
-        cards.push({
-          id: `bolly-search-${count++}`,
-          title: text,
-          permalink: href,
-          siteKey: 'bollyflix',
-          siteDisplayName: 'BOLLYFLIX',
-          confidenceScore: score,
-        });
-      }
-    }
-    if (cards.length > 0) return cards;
-
-    // Fallback matcher
-    const fallback = html.matchAll(/href="(https?:\/\/bollyflix\.at\/[a-z0-9-]+-(?:movie|web-series|hindi|dual)[^"]*)"[^>]*>([\s\S]{0,200}?)<\/a>/gi);
-    for (const match of fallback) {
+    for (const match of articleMatches) {
       const text = match[2].replace(/<[^>]+>/g, '').trim();
       if (text && text.length > 5) {
         const score = calculateMatchConfidence(query, text, queryYear);
@@ -60,6 +41,7 @@ export async function searchBollyflix(
         });
       }
     }
+    if (cards.length > 0) return cards;
   } catch (e: any) {
     // Timeout or network error handled silently by caller
   }
@@ -72,6 +54,9 @@ export async function searchBollyflix(
  */
 export function parseBollyflixArticle(html: string, articleUrl: string): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
+  const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
+
   const blocks = html.split(/<h[2-4]/gi);
 
   blocks.forEach((block, idx) => {
@@ -86,8 +71,10 @@ export function parseBollyflixArticle(html: string, articleUrl: string): Scraped
     else if (headerText.includes('1080p')) qualityLabel = '1080p';
     else if (headerText.includes('2160p') || headerText.includes('4K')) qualityLabel = '4K';
 
-    const codec = /hevc/i.test(headerText) ? 'HEVC 10Bit' : 'H.264';
-    const ripFormat = /bluray/i.test(headerText) ? 'BluRay' : 'WEB-DL';
+    const fullTagContext = `${headerText} ${mainTitle}`;
+    const codec = extractVideoCodec(headerText);
+    const ripFormat = extractRipFormat(fullTagContext);
+    const audioTracks = extractAudioTracks(fullTagContext);
 
     const sizeMatch = headerText.match(/\[([\d\.]+\s*(?:GB|MB))\]/i);
     const fileSize = sizeMatch ? sizeMatch[1] : '1.3 GB';

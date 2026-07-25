@@ -17,6 +17,7 @@ export default function AppNavigator() {
   const [downloaderMediaType, setDownloaderMediaType] = useState<string>('movie');
   const [downloaderImdbId, setDownloaderImdbId] = useState<string>('');
   const [downloaderYear, setDownloaderYear] = useState<string | undefined>(undefined);
+  const [downloaderIsBollywood, setDownloaderIsBollywood] = useState<boolean>(false);
   const [downloaderTrigger, setDownloaderTrigger] = useState<number>(0);
   const insets = useSafeAreaInsets();
 
@@ -24,12 +25,14 @@ export default function AppNavigator() {
     query: string,
     mediaType: string = 'movie',
     imdbId: string = '',
-    year?: string
+    year?: string,
+    isBollywood: boolean = false
   ) => {
     setDownloaderQuery(query);
     setDownloaderMediaType(mediaType);
     setDownloaderImdbId(imdbId);
     setDownloaderYear(year);
+    setDownloaderIsBollywood(isBollywood);
     setDownloaderTrigger((t) => t + 1);
     setActiveTab('downloader');
     triggerSelectionHaptic();
@@ -53,6 +56,7 @@ export default function AppNavigator() {
             initialMediaType={downloaderMediaType}
             initialImdbId={downloaderImdbId}
             initialYear={downloaderYear}
+            initialIsBollywood={downloaderIsBollywood}
             searchTrigger={downloaderTrigger}
           />
         </View>

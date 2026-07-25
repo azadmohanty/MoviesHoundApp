@@ -2,7 +2,7 @@ import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from '.
 import { calculateMatchConfidence } from './FuzzyMatcher';
 import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
 
-const BASE_DOMAIN = 'https://vegamovies.navy';
+const DEFAULT_ROG_DOMAIN = 'https://rogmovies.rest';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 export interface SeriesEpisodeItem {
@@ -12,10 +12,14 @@ export interface SeriesEpisodeItem {
 }
 
 /**
- * 100% Empirical DOM Parser for VegaMovies main article page.
- * Iterates through all <h3...>/<h5...> header blocks and extracts download links from the following section.
+ * 100% Empirical DOM Parser for RogMovies main article page.
+ * Identical structure to VegaMovies, tailored for Indian/Bollywood content.
  */
-export function parseVegaMoviesArticle(html: string, articleUrl: string): ScrapedQualityOption[] {
+export function parseRogMoviesArticle(
+  html: string,
+  articleUrl: string,
+  siteDisplayName: string = 'ROGMOVIES'
+): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
 
   const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
@@ -57,7 +61,7 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
 
       const isBatch = /batch|zip/i.test(linkText);
       const isEpisode = /episode|ep\s*\d+|e\d{2}|v-cloud|g-direct|instant|resumable|single/i.test(linkText);
-      
+
       let contentType: 'MOVIE' | 'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP' = 'MOVIE';
       if (isBatch) {
         contentType = 'SEASON_BATCH_ZIP';
@@ -66,9 +70,9 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
       }
 
       options.push({
-        id: `vega-${options.length}`,
-        siteKey: 'vegamovies',
-        siteDisplayName: 'VEGAMOVIES',
+        id: `rog-${options.length}`,
+        siteKey: 'rogmovies',
+        siteDisplayName: siteDisplayName,
         qualityLabel,
         ripFormat,
         codec,
@@ -87,23 +91,23 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
 }
 
 /**
- * Automated Multi-Page Search & Smart Verification Pipeline for VegaMovies.
- * Includes Exact Year Priority ranking & Media Type filtering.
+ * Automated Search & Verification Pipeline for RogMovies (Indian/Bollywood Content).
  */
-export async function getVegaMoviesQualityOptions(
+export async function getRogMoviesQualityOptions(
   queryTitle: string,
   targetYear?: string | number,
   targetImdbId?: string,
   mediaType: string = 'movie',
-  baseDomain: string = 'https://vegamovies.navy',
-  siteDisplayName: string = 'VEGAMOVIES',
+  baseDomain: string = DEFAULT_ROG_DOMAIN,
+  siteDisplayName: string = 'ROGMOVIES',
   signal?: AbortSignal,
   onLog?: (msg: string) => void
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = `${queryTitle} ${targetYear || ''}`.trim();
-  const searchUrl = `${baseDomain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
+  const domain = baseDomain || DEFAULT_ROG_DOMAIN;
+  const searchUrl = `${domain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
 
-  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
+  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${domain}...`);
 
   let hits: any[] = [];
   try {
@@ -112,34 +116,32 @@ export async function getVegaMoviesQualityOptions(
     const json = JSON.parse(text);
     hits = json.hits || [];
   } catch (e: any) {
-    if (onLog) onLog(`VegaMovies search error: ${e.message}`);
+    if (onLog) onLog(`${siteDisplayName} search error: ${e.message}`);
     return [];
   }
 
   if (hits.length === 0) {
-    if (onLog) onLog('VegaMovies: 0 search hits returned');
+    if (onLog) onLog(`${siteDisplayName}: 0 search hits returned`);
     return [];
   }
 
-  if (onLog) onLog(`VegaMovies: ${hits.length} raw search hits found. Pre-filtering...`);
+  if (onLog) onLog(`${siteDisplayName}: ${hits.length} raw search hits found. Pre-filtering...`);
 
   const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
   const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
 
-  // Step 1: Pre-filter by media type & title score
   let candidateHits = hits.filter((hit: any) => {
     const postTitle = hit.document?.post_title || '';
     const score = calculateMatchConfidence(queryTitle, postTitle, targetYear);
     if (score < 50) return false;
 
     const isTvPost = /season|s0\d|series|episodes|complete/i.test(postTitle);
-    if (isTvTarget && !isTvPost) return false; // Reject movies when user wanted TV series
-    if (!isTvTarget && isTvPost) return false; // Reject TV series when user wanted movie
+    if (isTvTarget && !isTvPost) return false;
+    if (!isTvTarget && isTvPost) return false;
 
     return true;
   });
 
-  // Step 2: Exact Year Priority Rule
   if (numTargetYear && candidateHits.length > 0) {
     const exactYearHits = candidateHits.filter((hit: any) => {
       const postTitle = hit.document?.post_title || '';
@@ -151,10 +153,9 @@ export async function getVegaMoviesQualityOptions(
     });
 
     if (exactYearHits.length > 0) {
-      if (onLog) onLog(`VegaMovies: Exact year match (${numTargetYear}) found! Using exact hits.`);
+      if (onLog) onLog(`${siteDisplayName}: Exact year match (${numTargetYear}) found!`);
       candidateHits = exactYearHits;
     } else {
-      // Fallback: year tolerance (± 1)
       candidateHits = candidateHits.filter((hit: any) => {
         const postTitle = hit.document?.post_title || '';
         const postYearMatch = postTitle.match(/\b(19\d\d|20\d\d)\b/);
@@ -168,22 +169,21 @@ export async function getVegaMoviesQualityOptions(
   }
 
   if (candidateHits.length === 0) {
-    if (onLog) onLog('VegaMovies: 0 candidates passed year & media-type filter');
+    if (onLog) onLog(`${siteDisplayName}: 0 candidates passed pre-filter`);
     return [];
   }
 
   const topHits = candidateHits.slice(0, 3);
-  if (onLog) onLog(`VegaMovies: Parallel fetching ${topHits.length} verified candidate pages...`);
+  if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified pages...`);
 
   const pagePromises = topHits.map(async (hit: any) => {
     let permalink = hit.document?.permalink || '';
-    if (permalink.startsWith('/')) permalink = BASE_DOMAIN + permalink;
+    if (permalink.startsWith('/')) permalink = domain + permalink;
 
     try {
       const res = await fetch(permalink, { signal, headers: { 'User-Agent': UA } });
       const html = await res.text();
 
-      // 3-Tier Verification Engine: IMDb text check
       if (targetImdbId) {
         const cleanImdb = targetImdbId.trim().toLowerCase();
         const foundImdbMatches = [...html.matchAll(/tt\d{7,8}/gi)].map((m) => m[0].toLowerCase());
@@ -191,15 +191,15 @@ export async function getVegaMoviesQualityOptions(
         if (foundImdbMatches.length > 0) {
           const hasExactImdb = foundImdbMatches.includes(cleanImdb);
           if (!hasExactImdb) {
-            if (onLog) onLog(`VegaMovies: Rejecting page (IMDb ID mismatch: ${foundImdbMatches[0]})`);
+            if (onLog) onLog(`${siteDisplayName}: Rejecting page (IMDb ID mismatch: ${foundImdbMatches[0]})`);
             return [];
           } else {
-            if (onLog) onLog(`VegaMovies: 🌟 100% Golden IMDb Match confirmed (${cleanImdb})`);
+            if (onLog) onLog(`${siteDisplayName}: 🌟 100% Golden IMDb Match confirmed (${cleanImdb})`);
           }
         }
       }
 
-      return parseVegaMoviesArticle(html, permalink);
+      return parseRogMoviesArticle(html, permalink, siteDisplayName);
     } catch (e: any) {
       return [];
     }
@@ -218,16 +218,17 @@ export async function getVegaMoviesQualityOptions(
   allOptions.forEach((o) => optionMap.set(o.targetUrl, o));
 
   const uniqueOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
-  if (onLog) onLog(`VegaMovies: 🎉 ${uniqueOptions.length} quality options extracted across matching pages!`);
+  if (onLog) onLog(`${siteDisplayName}: 🎉 ${uniqueOptions.length} quality options extracted!`);
 
   return uniqueOptions;
 }
 
 /**
- * Fetches individual episode items for a Web Series from NexDrive intermediate page.
+ * Fetches episode list for RogMovies series.
  */
-export async function fetchVegaMoviesEpisodes(
+export async function fetchRogMoviesEpisodes(
   nexdriveUrl: string,
+  baseDomain: string = DEFAULT_ROG_DOMAIN,
   signal?: AbortSignal
 ): Promise<SeriesEpisodeItem[]> {
   try {
@@ -235,14 +236,12 @@ export async function fetchVegaMoviesEpisodes(
       signal,
       headers: {
         'User-Agent': UA,
-        'Referer': BASE_DOMAIN + '/',
+        'Referer': (baseDomain || DEFAULT_ROG_DOMAIN) + '/',
       },
     });
     const html = await res.text();
 
     const episodes: SeriesEpisodeItem[] = [];
-
-    // Extract all episode links (Episode 01, Episode 02, etc. or VCloud episode anchors)
     const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
     links.forEach((l) => {
@@ -271,19 +270,20 @@ export async function fetchVegaMoviesEpisodes(
 }
 
 /**
- * Resolves Pass 2 VegaMovies deep locker URL (VCloud double-atob + G-Drive failover).
+ * Resolves Pass 2 RogMovies locker URL.
  */
-export async function resolveVegaMoviesLocker(
+export async function resolveRogMoviesLocker(
   targetUrl: string,
-  qualityLabel: string = '720p'
+  qualityLabel: string = '720p',
+  baseDomain: string = DEFAULT_ROG_DOMAIN
 ): Promise<ResolvedStreamResult> {
   try {
+    const domain = baseDomain || DEFAULT_ROG_DOMAIN;
     const res = await fetch(targetUrl, {
-      headers: { 'User-Agent': UA, 'Referer': BASE_DOMAIN + '/' },
+      headers: { 'User-Agent': UA, 'Referer': domain + '/' },
     });
     const html = await res.text();
 
-    // 1. Primary Locker: VCloud Token Decrypter
     const vcloudMatch = html.match(/href="([^"]*vcloud[^"]*)"/i);
     if (vcloudMatch) {
       const vcloudUrl = vcloudMatch[1];
@@ -302,7 +302,7 @@ export async function resolveVegaMoviesLocker(
             return {
               success: true,
               streamUrl: decoded,
-              providerName: 'VEGAMOVIES [V-CLOUD]',
+              providerName: 'ROGMOVIES [V-CLOUD]',
               qualityLabel,
             };
           }
@@ -310,13 +310,12 @@ export async function resolveVegaMoviesLocker(
       }
     }
 
-    // 2. Failover Locker: G-Drive / Direct Mirror
     const driveMatch = html.match(/href="([^"]*(?:gdrive|gdflix|drive|direct)[^"]*)"/i);
     if (driveMatch) {
       return {
         success: true,
         streamUrl: driveMatch[1],
-        providerName: 'VEGAMOVIES [G-DRIVE FAILOVER]',
+        providerName: 'ROGMOVIES [G-DRIVE FAILOVER]',
         qualityLabel,
       };
     }
@@ -324,15 +323,15 @@ export async function resolveVegaMoviesLocker(
     return {
       success: true,
       streamUrl: targetUrl,
-      providerName: 'VEGAMOVIES DIRECT',
+      providerName: 'ROGMOVIES DIRECT',
       qualityLabel,
     };
   } catch (err: any) {
     return {
       success: false,
-      providerName: 'VEGAMOVIES',
+      providerName: 'ROGMOVIES',
       qualityLabel,
-      message: `VegaMovies resolution error: ${err.message}`,
+      message: `RogMovies resolution error: ${err.message}`,
     };
   }
 }

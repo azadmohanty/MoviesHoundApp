@@ -26,14 +26,21 @@ import {
   fetchVegaMoviesEpisodes,
   SeriesEpisodeItem,
 } from '../utils/vegamoviesResolver';
+import {
+  getRogMoviesQualityOptions,
+  resolveRogMoviesLocker,
+  fetchRogMoviesEpisodes,
+} from '../utils/rogmoviesResolver';
 import { searchMoviesMod, parseMoviesModArticle, resolveMoviesModLocker } from '../utils/moviesmodResolver';
 import { searchBollyflix, parseBollyflixArticle, resolveBollyflixLocker } from '../utils/bollyflixResolver';
+import { HARDCODED_FALLBACKS } from '../utils/resolver';
 
 interface DownloaderScreenProps {
   initialSearchQuery?: string;
   initialImdbId?: string;
   initialYear?: string | number;
   initialMediaType?: string;
+  initialIsBollywood?: boolean;
   searchTrigger?: number;
 }
 
@@ -44,6 +51,7 @@ export default function DownloaderScreen({
   initialImdbId = '',
   initialYear,
   initialMediaType = 'movie',
+  initialIsBollywood = false,
   searchTrigger = 0,
 }: DownloaderScreenProps) {
   const [query, setQuery] = useState(initialSearchQuery);
@@ -135,9 +143,7 @@ export default function DownloaderScreen({
 
     try {
       addLog('Resolving live provider domains...');
-      await resolveAllDomains((msg) => addLog(msg));
-
-      addLog('Executing VegaMovies smart search with Exact Year Priority & Media-Type filter...');
+      const liveDomains = await resolveAllDomains((msg) => addLog(msg));
 
       const createController = () => {
         const controller = new AbortController();
@@ -145,21 +151,41 @@ export default function DownloaderScreen({
         return controller.signal;
       };
 
-      // 1. VegaMovies Automated Multi-Page Pipeline
-      const vegaOptionsPromise = getVegaMoviesQualityOptions(
-        cleanQ,
-        initialYear,
-        initialImdbId,
-        initialMediaType,
-        createController(),
-        (msg) => addLog(msg)
-      );
+      let scraperPromise: Promise<ScrapedQualityOption[]>;
 
-      const [vegaRes] = await Promise.allSettled([vegaOptionsPromise]);
+      if (initialIsBollywood) {
+        const domain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies;
+        addLog(`Executing RogMovies (Bollywood) search on ${domain}...`);
+        scraperPromise = getRogMoviesQualityOptions(
+          cleanQ,
+          initialYear,
+          initialImdbId,
+          initialMediaType,
+          domain,
+          'ROGMOVIES',
+          createController(),
+          (msg) => addLog(msg)
+        );
+      } else {
+        const domain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
+        addLog(`Executing VegaMovies (Hollywood) search on ${domain}...`);
+        scraperPromise = getVegaMoviesQualityOptions(
+          cleanQ,
+          initialYear,
+          initialImdbId,
+          initialMediaType,
+          domain,
+          'VEGAMOVIES',
+          createController(),
+          (msg) => addLog(msg)
+        );
+      }
+
+      const [res] = await Promise.allSettled([scraperPromise]);
 
       const allExtractedOptions: ScrapedQualityOption[] = [];
-      if (vegaRes.status === 'fulfilled') {
-        allExtractedOptions.push(...vegaRes.value);
+      if (res.status === 'fulfilled') {
+        allExtractedOptions.push(...res.value);
       }
 
       const optionMap = new Map<string, ScrapedQualityOption>();
@@ -192,7 +218,9 @@ export default function DownloaderScreen({
       setEpisodesLoading(true);
       addLog(`Fetching episode list for Season ${selectedSeason} (${selectedQuality})...`);
 
-      fetchVegaMoviesEpisodes(targetOption.targetUrl)
+      const epFetcher = targetOption.siteKey === 'rogmovies' ? fetchRogMoviesEpisodes : fetchVegaMoviesEpisodes;
+
+      epFetcher(targetOption.targetUrl)
         .then((epList) => {
           setEpisodesList(epList);
           addLog(`Extracted ${epList.length} episodes`);
@@ -224,7 +252,10 @@ export default function DownloaderScreen({
       qualityLabel: item.qualityLabel,
     };
 
-    if (item.siteKey === 'vegamovies') res = await resolveVegaMoviesLocker(targetUrl, item.qualityLabel);
+    if (item.siteKey === 'rogmovies') res = await resolveRogMoviesLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'vegamovies') res = await resolveVegaMoviesLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
 

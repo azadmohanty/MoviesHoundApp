@@ -1,5 +1,6 @@
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence } from './FuzzyMatcher';
+import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
 
 const BASE_DOMAIN = 'https://moviesmod.at';
 
@@ -56,6 +57,9 @@ export async function searchMoviesMod(
  */
 export function parseMoviesModArticle(html: string, articleUrl: string): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
+  const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
+
   const blocks = html.split(/<h[2-4]/gi);
 
   blocks.forEach((block, idx) => {
@@ -70,11 +74,13 @@ export function parseMoviesModArticle(html: string, articleUrl: string): Scraped
     else if (headerText.includes('1080p')) qualityLabel = '1080p';
     else if (headerText.includes('4K')) qualityLabel = '4K';
 
-    const codec = /10bit|hevc/i.test(headerText) ? 'HEVC 10Bit' : 'H.264';
-    const ripFormat = /imax|bluray/i.test(headerText) ? 'BluRay IMAX' : 'WEBRip';
+    const fullTagContext = `${headerText} ${mainTitle}`;
+    const codec = extractVideoCodec(headerText);
+    const ripFormat = extractRipFormat(fullTagContext);
+    const audioTracks = extractAudioTracks(fullTagContext);
 
     const sizeMatch = headerText.match(/\[([\d\.]+\s*(?:GB|MB))\]/i);
-    const fileSize = sizeMatch ? sizeMatch[1] : '1.4 GB';
+    const fileSize = sizeMatch ? sizeMatch[1] : 'N/A';
 
     const seasonMatch = headerText.match(/Season\s*(\d+)/i);
     const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;

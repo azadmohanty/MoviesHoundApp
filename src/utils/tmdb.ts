@@ -12,6 +12,8 @@ export interface TMDBMediaItem {
   rating: number;
   voteCount: number;
   voteCountFormatted: string;
+  originCountry?: string[];
+  originalLanguage?: string;
 }
 
 export interface CastMember {
@@ -69,7 +71,7 @@ export const getTMDBConfig = async (): Promise<TMDBConfig> => {
 };
 
 // Helper for fetch calls
-const fetchFromTMDB = async (endpoint: string, params: Record<string, string> = {}): Promise<any> => {
+export const fetchFromTMDB = async (endpoint: string, params: Record<string, string> = {}): Promise<any> => {
   const config = await getTMDBConfig();
   if (!config.apiKey) {
     throw new Error('API_KEY_MISSING');
@@ -115,7 +117,9 @@ const mapMediaItem = (item: any, mediaType: 'movie' | 'tv', imageBase: string): 
     mediaType,
     rating: item.vote_average || 0,
     voteCount,
-    voteCountFormatted: formatVoteCount(voteCount)
+    voteCountFormatted: formatVoteCount(voteCount),
+    originCountry: item.origin_country || (item.production_countries ? item.production_countries.map((c: any) => c.iso_3166_1) : undefined),
+    originalLanguage: item.original_language,
   };
 };
 

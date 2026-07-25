@@ -45,6 +45,7 @@ import {
   TMDBMediaItem,
   getTMDBConfig,
   getIMDbId,
+  fetchFromTMDB,
   discoverMediaByGenre,
   discoverMediaWithFilters,
   TMDB_GENRES,
@@ -81,7 +82,13 @@ type WatchlistItem = {
 };
 
 interface HomeScreenProps {
-  onNavigateToDownloader?: (query: string, mediaType?: string, imdbId?: string, year?: string) => void;
+  onNavigateToDownloader?: (
+    query: string,
+    mediaType?: string,
+    imdbId?: string,
+    year?: string,
+    isBollywood?: boolean
+  ) => void;
 }
 
 export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps = {}) {
@@ -705,18 +712,37 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     title: string, 
     type: 'movie' | 'tv' | 'anime', 
     tmdbId?: number,
-    releaseDate?: string
+    releaseDate?: string,
+    originCountry?: string[],
+    originalLanguage?: string
   ) => {
     triggerLightHaptic();
     let imdbId = '';
+    let fetchedOriginCountry = originCountry;
+    let fetchedOriginalLang = originalLanguage;
+
     if (tmdbId) {
       try {
         imdbId = (await getIMDbId(tmdbId, type === 'anime' ? 'movie' : type)) || '';
+        if ((!fetchedOriginCountry || fetchedOriginCountry.length === 0) && !fetchedOriginalLang) {
+          const details = await fetchFromTMDB(`/${type === 'anime' ? 'movie' : type}/${tmdbId}`);
+          if (details) {
+            fetchedOriginCountry = details.origin_country || (details.production_countries ? details.production_countries.map((c: any) => c.iso_3166_1) : []);
+            fetchedOriginalLang = details.original_language;
+          }
+        }
       } catch (e) {}
     }
+
+    const INDIAN_LANGUAGES = ['hi', 'ta', 'te', 'ml', 'kn', 'mr', 'pa', 'bn', 'gu', 'or', 'as'];
     const year = releaseDate ? releaseDate.split('-')[0] : undefined;
+    const isBollywood = Boolean(
+      (fetchedOriginCountry && fetchedOriginCountry.includes('IN')) ||
+      (fetchedOriginalLang && INDIAN_LANGUAGES.includes(fetchedOriginalLang))
+    );
+
     if (onNavigateToDownloader) {
-      onNavigateToDownloader(title, type, imdbId, year);
+      onNavigateToDownloader(title, type, imdbId, year, isBollywood);
     }
   };
 
@@ -812,7 +838,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             style={styles.feedCardDownload}
             onPress={() => {
               trackMediaClick(item.id, type);
-              handleSearchSubmitWithIMDb(item.title, type, item.id, item.releaseDate);
+              handleSearchSubmitWithIMDb(item.title, type, item.id, item.releaseDate, item.originCountry, item.originalLanguage);
             }}
             activeOpacity={0.8}
           >
@@ -1337,7 +1363,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         onDownloadPress={(seasonNum) => {
           if (activeMediaItem) {
             setPlayerVisible(false);
-            handleSearchSubmitWithIMDb(activeMediaItem.title, activeMediaItem.mediaType || 'movie', activeMediaItem.id, activeMediaItem.releaseDate);
+            handleSearchSubmitWithIMDb(activeMediaItem.title, activeMediaItem.mediaType || 'movie', activeMediaItem.id, activeMediaItem.releaseDate, activeMediaItem.originCountry, activeMediaItem.originalLanguage);
           }
         }}
         onSelectArtist={(id, name) => handleOpenArtist(id, name)}
