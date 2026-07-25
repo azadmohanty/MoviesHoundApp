@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,239 +8,452 @@ import {
   ScrollView,
   ActivityIndicator,
   Linking,
+  Alert,
+  Dimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { SearchResult, parseHTML } from '../utils/parser';
+import { getDeviceTopInset } from '../utils/SafeAreaCache';
+import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '../utils/HapticsHelper';
 import { resolveAllDomains } from '../utils/resolver';
 import { resolveFzMoviesStream } from '../utils/fzmoviesResolver';
+import { sanitizeSearchQuery } from '../utils/FuzzyMatcher';
+
+// Shared models & site resolvers
+import { ScrapedQualityOption, ResolvedStreamResult } from '../utils/resolverTypes';
+import {
+  getVegaMoviesQualityOptions,
+  resolveVegaMoviesLocker,
+  fetchVegaMoviesEpisodes,
+  SeriesEpisodeItem,
+} from '../utils/vegamoviesResolver';
+import { searchMoviesMod, parseMoviesModArticle, resolveMoviesModLocker } from '../utils/moviesmodResolver';
+import { searchBollyflix, parseBollyflixArticle, resolveBollyflixLocker } from '../utils/bollyflixResolver';
 
 interface DownloaderScreenProps {
   initialSearchQuery?: string;
+  initialImdbId?: string;
+  initialYear?: string | number;
+  initialMediaType?: string;
+  searchTrigger?: number;
 }
 
-type SearchTask = {
-  siteKey: string;
-  searchUrl: string;
-};
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-export default function DownloaderScreen({ initialSearchQuery = '' }: DownloaderScreenProps) {
+export default function DownloaderScreen({
+  initialSearchQuery = '',
+  initialImdbId = '',
+  initialYear,
+  initialMediaType = 'movie',
+  searchTrigger = 0,
+}: DownloaderScreenProps) {
   const [query, setQuery] = useState(initialSearchQuery);
   const [isSearching, setIsSearching] = useState(false);
-  const [tasks, setTasks] = useState<SearchTask[]>([]);
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [activeTaskIndex, setActiveTaskIndex] = useState<number>(-1);
   const [statusLog, setStatusLog] = useState<string[]>([]);
-  const [resolvedDomains, setResolvedDomains] = useState<Record<string, string>>({});
+  const [logsExpanded, setLogsExpanded] = useState(false);
 
+  // Filter States
+  const [selectedQuality, setSelectedQuality] = useState<'480p' | '720p' | '1080p' | '4K'>('720p');
+  const [seriesMode, setSeriesMode] = useState<'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP'>('SINGLE_EPISODE');
+  const [selectedSeason, setSelectedSeason] = useState<number>(1);
+
+  // Unified Extracted Options List
+  const [options, setOptions] = useState<ScrapedQualityOption[]>([]);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  // Web Series Episode Sub-Scraper State
+  const [episodesLoading, setEpisodesLoading] = useState(false);
+  const [episodesList, setEpisodesList] = useState<SeriesEpisodeItem[]>([]);
+  const [selectedEpUrl, setSelectedEpUrl] = useState<string | null>(null);
+
+  const prevTriggerRef = useRef(0);
+
+  // React to new queries pushed from HomeScreen via searchTrigger
   useEffect(() => {
-    if (initialSearchQuery) {
+    if (searchTrigger > 0 && searchTrigger !== prevTriggerRef.current && initialSearchQuery) {
+      prevTriggerRef.current = searchTrigger;
       setQuery(initialSearchQuery);
       handleStartScrape(initialSearchQuery);
     }
-  }, [initialSearchQuery]);
+  }, [searchTrigger]);
+
+  // Initial mount auto-search
+  useEffect(() => {
+    if (initialSearchQuery && searchTrigger === 0) {
+      setQuery(initialSearchQuery);
+      handleStartScrape(initialSearchQuery);
+    }
+  }, []);
 
   const addLog = (msg: string) => {
     setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 49)]);
+  };
+
+  const resetState = () => {
+    setOptions([]);
+    setEpisodesList([]);
+    setStatusLog([]);
+    setLogsExpanded(false);
   };
 
   const handleStartScrape = async (searchQuery?: string) => {
     const q = searchQuery || query;
     if (!q.trim()) return;
 
+    const cleanQ = sanitizeSearchQuery(q);
+    triggerLightHaptic();
     setIsSearching(true);
-    setResults([]);
-    setStatusLog([]);
-    addLog(`Initiating multi-source scrape for: "${q}"`);
+    resetState();
+    addLog(`Initiating scrape for: "${cleanQ}" (${initialMediaType.toUpperCase()})`);
 
-    // Run FzMovies Direct 480p MP4 scraper worker
-    addLog('Worker [FAST 480P MP4] searching FzMovies engine...');
-    resolveFzMoviesStream(q)
-      .then((fzRes) => {
-        if (fzRes && fzRes.url) {
-          addLog(`Worker [FAST 480P MP4] extracted direct link: (${fzRes.connections} connections)`);
-          setResults((prev) => [
-            {
-              title: `${q} - ${fzRes.qualityLabel}`,
-              link: fzRes.url,
-              siteName: 'FAST 480P MP4',
-              category: 'Movie'
-            },
-            ...prev
-          ]);
-        } else {
-          addLog('Worker [FAST 480P MP4] returned no direct MP4 link');
-        }
-      })
-      .catch((e) => {
-        addLog(`Worker [FAST 480P MP4] ERR: ${e.message}`);
-      });
+    // FzMovies direct MP4 fast lane
+    if (initialMediaType === 'movie') {
+      resolveFzMoviesStream(cleanQ)
+        .then((fzRes) => {
+          if (fzRes && fzRes.url) {
+            addLog('FzMovies: direct MP4 URL found');
+            setOptions((prev) => [
+              {
+                id: `fz-${Date.now()}`,
+                siteKey: 'fzmovies',
+                siteDisplayName: 'FZMOVIES',
+                qualityLabel: '480p',
+                ripFormat: 'MP4 FAST LANE',
+                codec: 'H.264',
+                fileSize: '350 MB',
+                audioTracks: 'English / Dual',
+                contentType: 'MOVIE',
+                seasonNumber: 1,
+                targetUrl: fzRes.url,
+                priorityScore: 0,
+              },
+              ...prev,
+            ]);
+          }
+        })
+        .catch(() => {});
+    }
 
     try {
-      addLog('Resolving mirror domain manifests...');
-      const domains = await resolveAllDomains((msg) => addLog(msg));
-      setResolvedDomains(domains);
+      addLog('Resolving live provider domains...');
+      await resolveAllDomains((msg) => addLog(msg));
 
-      const taskList: SearchTask[] = [
-        {
-          siteKey: 'bollyflix',
-          searchUrl: `${domains.bollyflix || 'https://bollyflix.com'}/?s=${encodeURIComponent(q)}`,
-        },
-        {
-          siteKey: 'vegamovies',
-          searchUrl: `${domains.vegamovies || 'https://vegamovies.net'}/?s=${encodeURIComponent(q)}`,
-        },
-        {
-          siteKey: 'moviesmod',
-          searchUrl: `${domains.moviesmod || 'https://moviesmod.com'}/?s=${encodeURIComponent(q)}`,
-        },
-      ];
+      addLog('Executing VegaMovies smart search with Exact Year Priority & Media-Type filter...');
 
-      setTasks(taskList);
-      setActiveTaskIndex(0);
-      addLog(`Created ${taskList.length} scraping worker threads`);
-    } catch (err: any) {
-      addLog(`ERR: Failed to initialize scrapers - ${err.message}`);
-      setIsSearching(false);
-    }
-  };
+      const createController = () => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 6000);
+        return controller.signal;
+      };
 
-  const handleScraperHTML = (siteKey: string, html: string) => {
-    addLog(`Processing raw DOM payload from worker: [${siteKey.toUpperCase()}]`);
-    const domain = resolvedDomains[siteKey] || '';
-    const parsed = parseHTML(html, siteKey, 'All', domain);
-    addLog(`Worker [${siteKey.toUpperCase()}] extracted ${parsed.length} direct stream candidates`);
-
-    setResults((prev) => [...prev, ...parsed]);
-
-    if (activeTaskIndex + 1 < tasks.length) {
-      setActiveTaskIndex((prev) => prev + 1);
-    } else {
-      setActiveTaskIndex(-1);
-      setIsSearching(false);
-      addLog('Scraper execution completed cleanly.');
-    }
-  };
-
-  const handleOpenLink = (url: string) => {
-    if (url) {
-      Linking.openURL(url).catch((err) =>
-        addLog(`ERR: Could not open link - ${err.message}`)
+      // 1. VegaMovies Automated Multi-Page Pipeline
+      const vegaOptionsPromise = getVegaMoviesQualityOptions(
+        cleanQ,
+        initialYear,
+        initialImdbId,
+        initialMediaType,
+        createController(),
+        (msg) => addLog(msg)
       );
+
+      const [vegaRes] = await Promise.allSettled([vegaOptionsPromise]);
+
+      const allExtractedOptions: ScrapedQualityOption[] = [];
+      if (vegaRes.status === 'fulfilled') {
+        allExtractedOptions.push(...vegaRes.value);
+      }
+
+      const optionMap = new Map<string, ScrapedQualityOption>();
+      allExtractedOptions.forEach((o) => optionMap.set(o.targetUrl, o));
+      const sortedOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
+
+      setOptions(sortedOptions);
+      addLog(`Total quality options available: ${sortedOptions.length}`);
+    } catch (err: any) {
+      addLog(`Scrape Error: ${err.message}`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const isSeries = options.some((o) => o.contentType !== 'MOVIE');
+  const availableSeasons = Array.from(new Set(options.map((o) => o.seasonNumber || 1))).sort((a, b) => a - b);
+
+  const filteredOptions = options.filter((opt) => {
+    if (opt.qualityLabel !== selectedQuality) return false;
+    if (opt.contentType === 'MOVIE') return true;
+    if (opt.seasonNumber !== selectedSeason) return false;
+    return opt.contentType === seriesMode;
+  });
+
+  // Auto-fetch episodes when series mode is SINGLE_EPISODE
+  useEffect(() => {
+    if (isSeries && seriesMode === 'SINGLE_EPISODE' && filteredOptions.length > 0) {
+      const targetOption = filteredOptions[0];
+      setEpisodesLoading(true);
+      addLog(`Fetching episode list for Season ${selectedSeason} (${selectedQuality})...`);
+
+      fetchVegaMoviesEpisodes(targetOption.targetUrl)
+        .then((epList) => {
+          setEpisodesList(epList);
+          addLog(`Extracted ${epList.length} episodes`);
+        })
+        .finally(() => setEpisodesLoading(false));
+    }
+  }, [isSeries, seriesMode, selectedSeason, selectedQuality, options]);
+
+  const handleDownload = async (item: ScrapedQualityOption, action: 'download' | 'copy', customUrl?: string) => {
+    triggerSelectionHaptic();
+
+    const targetUrl = customUrl || item.targetUrl;
+
+    if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox') {
+      if (action === 'download') {
+        Linking.openURL(targetUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
+      } else {
+        Alert.alert('Download Link', targetUrl);
+      }
+      return;
+    }
+
+    setResolvingId(item.id);
+    addLog(`Resolving Pass 2 for ${item.siteDisplayName}...`);
+
+    let res: ResolvedStreamResult = {
+      success: false,
+      providerName: item.siteDisplayName,
+      qualityLabel: item.qualityLabel,
+    };
+
+    if (item.siteKey === 'vegamovies') res = await resolveVegaMoviesLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
+
+    setResolvingId(null);
+
+    if (res.success && res.streamUrl) {
+      triggerSuccessHaptic();
+      addLog(`Resolved: ${res.providerName}`);
+      if (action === 'download') {
+        Linking.openURL(res.streamUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
+      } else {
+        Alert.alert('Direct Download Link', res.streamUrl);
+      }
+    } else {
+      addLog(`Failed: ${res.message || 'Locker offline'}`);
+      Alert.alert('Resolution Failed', res.message || 'Could not extract download URL. Locker may be offline.');
     }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
+    <View style={[styles.container, { paddingTop: getDeviceTopInset() }]}>
+      {/* ── HEADER ── */}
       <View style={styles.header}>
-        <View style={styles.titleRow}>
-          <Ionicons name="download-outline" size={20} color="#FFE500" />
+        <View style={styles.headerLeft}>
+          <Ionicons name="download-outline" size={18} color="#FFE500" />
           <Text style={styles.headerTitle}>DOWNLOADER TERMINAL</Text>
         </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>MULTISOURCE SCRAPER</Text>
-        </View>
+        {isSearching && <ActivityIndicator size="small" color="#FFE500" />}
       </View>
 
-      {/* Search Input Bar */}
-      <View style={styles.searchSection}>
-        <View style={styles.inputWrapper}>
-          <Ionicons name="search-outline" size={18} color="rgba(255, 255, 255, 0.4)" />
+      {/* ── SEARCH BAR ── */}
+      <View style={styles.searchRow}>
+        <View style={styles.inputWrap}>
+          <Ionicons name="search-outline" size={16} color="rgba(255,255,255,0.35)" />
           <TextInput
             style={styles.input}
-            placeholder="Search movies/shows to scrape links..."
-            placeholderTextColor="rgba(255, 255, 255, 0.4)"
+            placeholder="Movie or series title..."
+            placeholderTextColor="rgba(255,255,255,0.3)"
             value={query}
             onChangeText={setQuery}
             onSubmitEditing={() => handleStartScrape()}
+            returnKeyType="search"
           />
-          {query ? (
-            <TouchableOpacity onPress={() => setQuery('')}>
-              <Ionicons name="close-circle" size={16} color="rgba(255, 255, 255, 0.4)" />
+          {query.length > 0 && (
+            <TouchableOpacity onPress={() => { setQuery(''); resetState(); }}>
+              <Ionicons name="close-circle" size={15} color="rgba(255,255,255,0.3)" />
             </TouchableOpacity>
-          ) : null}
+          )}
         </View>
         <TouchableOpacity
-          style={styles.scrapeButton}
+          style={styles.scrapeBtn}
           onPress={() => handleStartScrape()}
           disabled={isSearching}
         >
-          {isSearching ? (
-            <ActivityIndicator size="small" color="#000000" />
-          ) : (
-            <Text style={styles.scrapeBtnText}>SCRAPE</Text>
-          )}
+          <Text style={styles.scrapeBtnText}>SCRAPE</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.mainContent} showsVerticalScrollIndicator={false}>
-        {/* Scraper Status Box */}
-        <View style={styles.terminalBox}>
-          <View style={styles.terminalHeader}>
-            <Ionicons name="terminal-outline" size={14} color="#00E5FF" />
-            <Text style={styles.terminalTitle}>LIVE WORKER LOGS</Text>
-          </View>
-          <View style={styles.terminalBody}>
-            {statusLog.length === 0 ? (
-              <Text style={styles.logPlaceholder}>
-                Terminal ready. Enter search query above or trigger download options from player.
+      {/* ── QUALITY PILLS (always visible) ── */}
+      <View style={styles.qualityRow}>
+        {(['480p', '720p', '1080p', '4K'] as const).map((q) => (
+          <TouchableOpacity
+            key={q}
+            style={[styles.qualityPill, selectedQuality === q && styles.qualityPillActive]}
+            onPress={() => { triggerSelectionHaptic(); setSelectedQuality(q); }}
+          >
+            <Text style={[styles.qualityPillText, selectedQuality === q && styles.qualityPillTextActive]}>
+              {q}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* ── SERIES MODE TOGGLE (only if series) ── */}
+      {isSeries && (
+        <View style={styles.seriesRow}>
+          {availableSeasons.length > 1 && availableSeasons.map((sn) => (
+            <TouchableOpacity
+              key={`s${sn}`}
+              style={[styles.modePill, selectedSeason === sn && styles.modePillActive]}
+              onPress={() => { triggerSelectionHaptic(); setSelectedSeason(sn); }}
+            >
+              <Text style={[styles.modePillText, selectedSeason === sn && styles.modePillTextActive]}>
+                S{sn}
               </Text>
+            </TouchableOpacity>
+          ))}
+          <View style={styles.divider} />
+          {(['SINGLE_EPISODE', 'SEASON_BATCH_ZIP'] as const).map((mode) => (
+            <TouchableOpacity
+              key={mode}
+              style={[styles.modePill, seriesMode === mode && styles.modePillActive]}
+              onPress={() => { triggerSelectionHaptic(); setSeriesMode(mode); }}
+            >
+              <Text style={[styles.modePillText, seriesMode === mode && styles.modePillTextActive]}>
+                {mode === 'SINGLE_EPISODE' ? 'EPISODES' : 'BATCH ZIP'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* ── MAIN SCROLL AREA ── */}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Web Series 3-Column Episode Grid */}
+        {isSeries && seriesMode === 'SINGLE_EPISODE' && (
+          <View style={styles.episodeSection}>
+            <Text style={styles.sectionLabel}>
+              SEASON {selectedSeason} EPISODES  ·  {selectedQuality.toUpperCase()}
+            </Text>
+            {episodesLoading ? (
+              <ActivityIndicator size="small" color="#FFE500" style={{ marginVertical: 20 }} />
+            ) : episodesList.length === 0 ? (
+              <Text style={styles.emptySubText}>No episodes found for this season</Text>
             ) : (
-              statusLog.map((log, idx) => (
-                <Text key={idx} style={styles.logText}>
-                  {log}
-                </Text>
+              <View style={styles.epGrid}>
+                {episodesList.map((ep) => (
+                  <TouchableOpacity
+                    key={`ep-${ep.episodeNumber}`}
+                    style={styles.epButton}
+                    onPress={() => {
+                      if (filteredOptions.length > 0) {
+                        handleDownload(filteredOptions[0], 'download', ep.targetUrl);
+                      }
+                    }}
+                  >
+                    <Text style={styles.epBtnText}>EP {ep.episodeNumber < 10 ? `0${ep.episodeNumber}` : ep.episodeNumber}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Season Batch Zip Cards & Movie Cards */}
+        {(!isSeries || seriesMode === 'SEASON_BATCH_ZIP') && (
+          filteredOptions.length === 0 && !isSearching && options.length > 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="search-outline" size={36} color="rgba(255,255,255,0.12)" />
+              <Text style={styles.emptyText}>No {selectedQuality} options found</Text>
+              <Text style={styles.emptySubText}>Try a different quality tier above</Text>
+            </View>
+          ) : (
+            filteredOptions.map((item) => {
+              const isResolving = resolvingId === item.id;
+              return (
+                <View key={item.id} style={styles.providerCard}>
+                  {/* Top Row: provider name + file size */}
+                  <View style={styles.cardTopRow}>
+                    <Text style={styles.providerName}>⚡ {item.siteDisplayName}</Text>
+                    <Text style={styles.fileSize}>{item.fileSize}</Text>
+                  </View>
+
+                  {/* Metadata: dot-separated single line */}
+                  <Text style={styles.metaLine}>
+                    {[item.ripFormat, item.codec, item.audioTracks].filter(Boolean).join('  ·  ')}
+                  </Text>
+
+                  {/* Action Buttons */}
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity
+                      style={styles.dlBtn}
+                      onPress={() => handleDownload(item, 'download')}
+                      disabled={isResolving}
+                    >
+                      {isResolving
+                        ? <ActivityIndicator size="small" color="#0A0A0C" />
+                        : <Text style={styles.dlBtnText}>📥  DOWNLOAD</Text>
+                      }
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.copyBtn}
+                      onPress={() => handleDownload(item, 'copy')}
+                      disabled={isResolving}
+                    >
+                      <Text style={styles.copyBtnText}>🔗  COPY LINK</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })
+          )
+        )}
+
+        {/* Initial Empty State */}
+        {!isSearching && options.length === 0 && (
+          <View style={styles.emptyState}>
+            <Ionicons name="cloud-download-outline" size={44} color="rgba(255,255,255,0.1)" />
+            <Text style={styles.emptyText}>Downloader Terminal Ready</Text>
+            <Text style={styles.emptySubText}>Enter a title above and tap SCRAPE</Text>
+          </View>
+        )}
+
+        {/* ── SCRAPER LOGS (always at bottom, collapsible) ── */}
+        {statusLog.length > 0 && (
+          <View style={styles.logBox}>
+            <TouchableOpacity
+              style={styles.logHeader}
+              onPress={() => setLogsExpanded((v) => !v)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.logHeaderLeft}>
+                <Ionicons name="terminal-outline" size={12} color="rgba(0,229,255,0.7)" />
+                <Text style={styles.logTitle}>SCRAPER LOGS</Text>
+              </View>
+              <Ionicons
+                name={logsExpanded ? 'chevron-up' : 'chevron-down'}
+                size={12}
+                color="rgba(255,255,255,0.3)"
+              />
+            </TouchableOpacity>
+            {logsExpanded ? (
+              statusLog.map((line, i) => (
+                <Text key={i} style={styles.logLine}>{line}</Text>
+              ))
+            ) : (
+              statusLog.slice(0, 3).map((line, i) => (
+                <Text key={i} style={styles.logLine}>{line}</Text>
               ))
             )}
           </View>
-        </View>
-
-        {/* Results List */}
-        <View style={styles.resultsHeader}>
-          <Text style={styles.sectionTitle}>
-            FOUND CANDIDATES ({results.length})
-          </Text>
-        </View>
-
-        {results.length === 0 && !isSearching ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="cloud-download-outline" size={48} color="rgba(255, 255, 255, 0.15)" />
-            <Text style={styles.emptyText}>No direct file download links extracted yet</Text>
-          </View>
-        ) : (
-          results.map((item, idx) => (
-            <TouchableOpacity
-              key={idx}
-              style={styles.resultCard}
-              onPress={() => handleOpenLink(item.link)}
-            >
-              <View style={styles.cardTop}>
-                <Text style={styles.cardTitle} numberOfLines={2}>
-                  {item.title}
-                </Text>
-                <View style={styles.sourceTag}>
-                  <Text style={styles.sourceTagText}>{item.siteName?.toUpperCase() || 'WEB'}</Text>
-                </View>
-              </View>
-
-              {item.category ? (
-                <View style={styles.qualityChip}>
-                  <Text style={styles.qualityText}>{item.category}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.cardFooter}>
-                <Ionicons name="open-outline" size={14} color="#FFE500" />
-                <Text style={styles.urlText} numberOfLines={1}>
-                  {item.link}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ))
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -249,6 +462,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0C',
   },
+
+  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -256,192 +471,270 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: 'rgba(255,255,255,0.07)',
   },
-  titleRow: {
+  headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   headerTitle: {
     fontFamily: 'Ndot57',
-    fontSize: 14,
+    fontSize: 24,
     color: '#FFFFFF',
     letterSpacing: 2,
   },
-  badge: {
-    backgroundColor: 'rgba(255, 229, 0, 0.12)',
-    borderWidth: 1,
-    borderColor: '#FFE500',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  badgeText: {
-    fontFamily: 'LetteraMono',
-    fontSize: 9,
-    color: '#FFE500',
-    letterSpacing: 1,
-  },
-  searchSection: {
+
+  // Search
+  searchRow: {
     flexDirection: 'row',
     paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingVertical: 10,
     gap: 10,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  inputWrapper: {
+  inputWrap: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#16161C',
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     gap: 8,
   },
   input: {
     flex: 1,
-    height: 42,
-    fontFamily: 'LetteraMono',
-    fontSize: 12,
     color: '#FFFFFF',
+    fontFamily: 'NType82Mono',
+    fontSize: 12,
+    padding: 0,
   },
-  scrapeButton: {
+  scrapeBtn: {
     backgroundColor: '#FFE500',
     paddingHorizontal: 16,
+    paddingVertical: 9,
     justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 8,
   },
   scrapeBtnText: {
     fontFamily: 'Ndot57',
     fontSize: 11,
-    color: '#000000',
-    letterSpacing: 1,
+    color: '#0A0A0C',
   },
-  mainContent: {
-    flex: 1,
+
+  // Quality Pills
+  qualityRow: {
+    flexDirection: 'row',
     paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingVertical: 10,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  terminalBox: {
-    backgroundColor: '#050507',
-    borderRadius: 8,
+  qualityPill: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(0, 229, 255, 0.2)',
-    overflow: 'hidden',
-    marginBottom: 16,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'transparent',
   },
-  terminalHeader: {
+  qualityPillActive: {
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FFFFFF',
+  },
+  qualityPillText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
+  },
+  qualityPillTextActive: {
+    color: '#0A0A0C',
+  },
+
+  // Series Mode Row
+  seriesRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(0, 229, 255, 0.05)',
-    paddingHorizontal: 12,
+    paddingHorizontal: 20,
     paddingVertical: 8,
+    gap: 6,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0, 229, 255, 0.1)',
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  terminalTitle: {
-    fontFamily: 'Ndot55',
-    fontSize: 10,
-    color: '#00E5FF',
-    letterSpacing: 1,
+  divider: {
+    width: 1,
+    height: 18,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    marginHorizontal: 4,
   },
-  terminalBody: {
-    padding: 12,
-    maxHeight: 140,
+  modePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
   },
-  logPlaceholder: {
-    fontFamily: 'LetteraMono',
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.3)',
+  modePillActive: {
+    borderColor: '#FFE500',
+    backgroundColor: 'rgba(255,229,0,0.08)',
   },
-  logText: {
-    fontFamily: 'LetteraMono',
-    fontSize: 10,
-    color: '#00E5FF',
-    lineHeight: 16,
+  modePillText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.45)',
   },
-  resultsHeader: {
-    marginBottom: 10,
+  modePillTextActive: {
+    color: '#FFE500',
   },
-  sectionTitle: {
-    fontFamily: 'LetteraMono',
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
-    letterSpacing: 1,
+
+  // Episode Grid Section
+  episodeSection: {
+    marginBottom: 20,
   },
-  emptyContainer: {
+  epGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  epButton: {
+    width: (SCREEN_WIDTH - 56) / 3,
+    paddingVertical: 10,
     alignItems: 'center',
-    paddingVertical: 40,
-    gap: 12,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  emptyText: {
-    fontFamily: 'LetteraMono',
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.4)',
+  epBtnText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: '#FFE500',
   },
-  resultCard: {
-    backgroundColor: '#16161C',
-    borderRadius: 8,
+
+  // Scroll
+  scroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 40 },
+
+  // Provider cards
+  providerCard: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
     padding: 14,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-    gap: 8,
   },
-  cardTop: {
+  cardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 8,
+    alignItems: 'center',
+    marginBottom: 6,
   },
-  cardTitle: {
-    flex: 1,
-    fontFamily: 'LetteraMono',
+  providerName: {
+    fontFamily: 'NType82Mono',
     fontSize: 12,
     color: '#FFFFFF',
-    lineHeight: 16,
+    fontWeight: '600',
   },
-  sourceTag: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  sourceTagText: {
-    fontFamily: 'LetteraMono',
-    fontSize: 8,
-    color: 'rgba(255, 255, 255, 0.6)',
-  },
-  qualityChip: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255, 229, 0, 0.1)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  qualityText: {
-    fontFamily: 'LetteraMono',
-    fontSize: 9,
+  fileSize: {
+    fontFamily: 'NType82Mono',
+    fontSize: 12,
     color: '#FFE500',
   },
-  cardFooter: {
+  metaLine: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.4)',
+    marginBottom: 12,
+  },
+
+  // Action buttons
+  actionRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dlBtn: {
+    flex: 2,
+    backgroundColor: '#FFE500',
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dlBtnText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: '#0A0A0C',
+    fontWeight: '600',
+  },
+  copyBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  copyBtnText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.6)',
+  },
+
+  // Empty state
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 50,
+    gap: 8,
+  },
+  emptyText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.3)',
+  },
+  emptySubText: {
+    fontFamily: 'LetteraMono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.18)',
+  },
+
+  // Section label
+  sectionLabel: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.35)',
+    marginBottom: 10,
+    letterSpacing: 0.5,
+  },
+
+  // Logs
+  logBox: {
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.12)',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    padding: 12,
+  },
+  logHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  logHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 4,
   },
-  urlText: {
-    flex: 1,
+  logTitle: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    color: 'rgba(0,229,255,0.7)',
+    letterSpacing: 1,
+  },
+  logLine: {
     fontFamily: 'LetteraMono',
     fontSize: 9,
-    color: '#FFE500',
+    color: 'rgba(0,255,136,0.7)',
+    lineHeight: 14,
   },
 });

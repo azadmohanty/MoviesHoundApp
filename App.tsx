@@ -1,10 +1,14 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFonts } from 'expo-font';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation/AppNavigator';
+import { initSafeAreaCache } from './src/utils/SafeAreaCache';
 
 export default function App() {
+  useEffect(() => {
+    initSafeAreaCache();
+  }, []);
   const [fontsLoaded] = useFonts({
     'Ndot55': require('./assets/fonts/Ndot55-Regular.otf'),
     'Ndot57': require('./assets/fonts/Ndot57-Regular.otf'),

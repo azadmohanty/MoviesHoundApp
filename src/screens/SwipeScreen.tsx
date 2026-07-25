@@ -24,6 +24,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getDeviceTopInset } from '../utils/SafeAreaCache';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -175,7 +176,7 @@ export default function SwipeScreen() {
   const deckFinished = !loading && currentIndex >= cards.length && cards.length > 0;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={[styles.container, { paddingTop: getDeviceTopInset() }]}>
       {/* Dynamic Ambient Poster Blur Backdrop Tint */}
       {currentCard && (
         <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
@@ -377,7 +378,7 @@ export default function SwipeScreen() {
           onClose={() => setPlayerVisible(false)}
         />
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -411,8 +412,8 @@ const styles = StyleSheet.create({
   },
   brandText: {
     fontFamily: 'Ndot57',
-    fontSize: 14,
-    color: '#FFF',
+    fontSize: 24,
+    color: '#FFFFFF',
     letterSpacing: 2,
   },
   infoBtn: {

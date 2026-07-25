@@ -17,12 +17,15 @@ import {
   Platform,
   UIManager,
   Animated,
-  Dimensions
+  Dimensions,
+  InteractionManager,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getDeviceTopInset, updateDeviceTopInset, initSafeAreaCache } from '../utils/SafeAreaCache';
+import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic, triggerSelectionHaptic } from '../utils/HapticsHelper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { CategoryPill } from '../components/CategoryPill';
@@ -78,7 +81,7 @@ type WatchlistItem = {
 };
 
 interface HomeScreenProps {
-  onNavigateToDownloader?: (query: string) => void;
+  onNavigateToDownloader?: (query: string, mediaType?: string, imdbId?: string, year?: string) => void;
 }
 
 export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps = {}) {
@@ -702,9 +705,19 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     title: string, 
     type: 'movie' | 'tv' | 'anime', 
     tmdbId?: number,
-    suggestedCategory: typeof category = 'all'
+    releaseDate?: string
   ) => {
-    runDownloadScraper(title, type, tmdbId);
+    triggerLightHaptic();
+    let imdbId = '';
+    if (tmdbId) {
+      try {
+        imdbId = (await getIMDbId(tmdbId, type === 'anime' ? 'movie' : type)) || '';
+      } catch (e) {}
+    }
+    const year = releaseDate ? releaseDate.split('-')[0] : undefined;
+    if (onNavigateToDownloader) {
+      onNavigateToDownloader(title, type, imdbId, year);
+    }
   };
 
   const handleToggleExploreType = (type: 'movie' | 'tv') => {
@@ -799,7 +812,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             style={styles.feedCardDownload}
             onPress={() => {
               trackMediaClick(item.id, type);
-              handleSearchSubmitWithIMDb(item.title, type, item.id, suggestedCategory);
+              handleSearchSubmitWithIMDb(item.title, type, item.id, item.releaseDate);
             }}
             activeOpacity={0.8}
           >
@@ -823,7 +836,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   });
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={[styles.container, { paddingTop: getDeviceTopInset() }]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* Dual-Layer Animated Cross-Fade Ambient Backdrop (Swipe Screen Style) */}
@@ -856,7 +869,10 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
         <TouchableOpacity
           style={styles.headerSearchBtn}
-          onPress={() => setIsSearchOverlayOpen(true)}
+          onPress={() => {
+            triggerLightHaptic();
+            setIsSearchOverlayOpen(true);
+          }}
           activeOpacity={0.8}
         >
           <Ionicons name="search-outline" size={20} color="#FFFFFF" />
@@ -867,7 +883,10 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
       <View style={styles.glassSubTabCapsuleRow}>
         <TouchableOpacity
           style={[styles.glassSubTabBtn, subTab === 'for_you' && styles.glassSubTabBtnActive]}
-          onPress={() => setSubTab('for_you')}
+          onPress={() => {
+            triggerSelectionHaptic();
+            setSubTab('for_you');
+          }}
         >
           <Text style={[styles.glassSubTabText, subTab === 'for_you' && styles.glassSubTabTextActive]}>
             FOR YOU
@@ -876,6 +895,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         <TouchableOpacity
           style={[styles.glassSubTabBtn, subTab === 'explore' && styles.glassSubTabBtnActive]}
           onPress={() => {
+            triggerSelectionHaptic();
             setSubTab('explore');
             if (exploreMedia.length === 0) loadExploreData();
           }}
@@ -1317,7 +1337,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
         onDownloadPress={(seasonNum) => {
           if (activeMediaItem) {
             setPlayerVisible(false);
-            runDownloadScraper(activeMediaItem.title, activeMediaItem.mediaType || 'movie', activeMediaItem.id, seasonNum);
+            handleSearchSubmitWithIMDb(activeMediaItem.title, activeMediaItem.mediaType || 'movie', activeMediaItem.id, activeMediaItem.releaseDate);
           }
         }}
         onSelectArtist={(id, name) => handleOpenArtist(id, name)}
@@ -1372,132 +1392,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
           </View>
         </TouchableOpacity>
       </Modal>
-
-      {/* Isolated Scraper Terminal Modal */}
-      <Modal
-        visible={scraperVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => {
-          setScraperVisible(false);
-          setScraperTasks([]);
-          setScraperResults([]);
-          setScraperStatus('');
-        }}
-      >
-        <View style={styles.scraperModalOverlay}>
-          <View style={styles.scraperModalContent}>
-            {/* Header */}
-            <View style={styles.scraperHeader}>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={styles.scraperModalTitle}>DOWNLOAD & STREAM RESOLVER</Text>
-                <Text style={styles.scraperSubtitle} numberOfLines={1}>
-                  {scraperMediaType.toUpperCase()} • {scraperQuery.toUpperCase()}
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.scraperCloseButton}
-                onPress={() => {
-                  setScraperVisible(false);
-                  setScraperTasks([]);
-                  setScraperResults([]);
-                  setScraperStatus('');
-                }}
-              >
-                <Text style={styles.scraperCloseText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Editable Query Search Box */}
-            <View style={styles.scraperSearchBox}>
-              <TextInput
-                style={styles.scraperInput}
-                value={scraperQuery}
-                onChangeText={setScraperQuery}
-                placeholder="EDIT SEARCH KEYWORD FOR SCRAPING..."
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                onSubmitEditing={() => runDownloadScraper(scraperQuery, scraperMediaType, scraperTmdbId)}
-                autoCorrect={false}
-                returnKeyType="search"
-              />
-              <TouchableOpacity
-                style={styles.scraperSearchButton}
-                onPress={() => runDownloadScraper(scraperQuery, scraperMediaType, scraperTmdbId)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.scraperSearchButtonText}>RE-SCRAPE</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Status Section */}
-            {scraperStatus ? (
-              <View style={styles.scraperStatusBox}>
-                {scraperLoading && <ActivityIndicator size="small" color={accentColor} style={{ marginRight: 8 }} />}
-                <Text style={[styles.scraperStatusText, { color: accentColor }]}>
-                  {scraperStatus.toUpperCase()}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Active Sources Badges */}
-            {scraperTasks.length > 0 && (
-              <View style={styles.scraperSourcesRow}>
-                {scraperTasks.map((task) => (
-                  <View key={`badge-${task.siteKey}`} style={styles.sourceTaskBadge}>
-                    <Text style={styles.sourceTaskBadgeText}>
-                      ⚡ {task.siteKey.toUpperCase()}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Scraper Results List */}
-            <FlatList
-              data={scraperResults}
-              keyExtractor={(item, index) => `${item.link}-${index}`}
-              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
-              renderItem={({ item }) => (
-                <ResultCard item={item} onPress={() => openLink(item.link)} />
-              )}
-              ListEmptyComponent={
-                !scraperLoading && scraperResults.length === 0 ? (
-                  <View style={styles.scraperEmptyContainer}>
-                    <Text style={styles.scraperEmptyText}>NO DIRECT LINKS RESOLVED YET</Text>
-                  </View>
-                ) : null
-              }
-            />
-          </View>
-        </View>
-      </Modal>
-
-      {/* Invisible scraper WebViews */}
-      <View style={styles.hiddenContainer}>
-        {scraperTasks.map((task) => (
-          <WebView
-            key={task.siteKey}
-            source={{ uri: task.searchUrl }}
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            onShouldStartLoadWithRequest={(request) => {
-              return request.url.startsWith('http://') || request.url.startsWith('https://');
-            }}
-            onMessage={(event) => handleWebViewMessage(task.siteKey, event.nativeEvent.data)}
-            injectedJavaScript={`
-              const checkLoaded = setInterval(() => {
-                if (document.body && !document.getElementById('challenge-running')) {
-                  clearInterval(checkLoaded);
-                  window.ReactNativeWebView.postMessage(document.documentElement.outerHTML);
-                }
-              }, 500);
-              true;
-            `}
-          />
-        ))}
-      </View>
-    </SafeAreaView>
+    </View>
   );
 }
 

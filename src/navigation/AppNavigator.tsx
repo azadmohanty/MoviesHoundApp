@@ -9,43 +9,67 @@ import MeScreen from '../screens/MeScreen';
 
 export type TabType = 'home' | 'swipe' | 'downloader' | 'me';
 
+import { triggerSelectionHaptic } from '../utils/HapticsHelper';
+
 export default function AppNavigator() {
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [downloaderQuery, setDownloaderQuery] = useState<string>('');
+  const [downloaderMediaType, setDownloaderMediaType] = useState<string>('movie');
+  const [downloaderImdbId, setDownloaderImdbId] = useState<string>('');
+  const [downloaderYear, setDownloaderYear] = useState<string | undefined>(undefined);
+  const [downloaderTrigger, setDownloaderTrigger] = useState<number>(0);
   const insets = useSafeAreaInsets();
 
-  const handleNavigateToDownloader = (query: string) => {
+  const handleNavigateToDownloader = (
+    query: string,
+    mediaType: string = 'movie',
+    imdbId: string = '',
+    year?: string
+  ) => {
     setDownloaderQuery(query);
+    setDownloaderMediaType(mediaType);
+    setDownloaderImdbId(imdbId);
+    setDownloaderYear(year);
+    setDownloaderTrigger((t) => t + 1);
     setActiveTab('downloader');
-  };
-
-  const renderActiveScreen = () => {
-    switch (activeTab) {
-      case 'home':
-        return <HomeScreen onNavigateToDownloader={handleNavigateToDownloader} />;
-      case 'swipe':
-        return <SwipeScreen />;
-      case 'downloader':
-        return <DownloaderScreen initialSearchQuery={downloaderQuery} />;
-      case 'me':
-        return <MeScreen />;
-      default:
-        return <HomeScreen onNavigateToDownloader={handleNavigateToDownloader} />;
-    }
+    triggerSelectionHaptic();
   };
 
   const bottomPadding = Math.max(insets.bottom, 10);
 
   return (
     <View style={styles.container}>
-      <View style={styles.screenContainer}>{renderActiveScreen()}</View>
+      {/* Off-screen Screen Freezing: All tab screens remain mounted in native memory */}
+      <View style={styles.screenContainer}>
+        <View style={[StyleSheet.absoluteFillObject, activeTab !== 'home' && { display: 'none' }]}>
+          <HomeScreen onNavigateToDownloader={handleNavigateToDownloader} />
+        </View>
+        <View style={[StyleSheet.absoluteFillObject, activeTab !== 'swipe' && { display: 'none' }]}>
+          <SwipeScreen />
+        </View>
+        <View style={[StyleSheet.absoluteFillObject, activeTab !== 'downloader' && { display: 'none' }]}>
+          <DownloaderScreen
+            initialSearchQuery={downloaderQuery}
+            initialMediaType={downloaderMediaType}
+            initialImdbId={downloaderImdbId}
+            initialYear={downloaderYear}
+            searchTrigger={downloaderTrigger}
+          />
+        </View>
+        <View style={[StyleSheet.absoluteFillObject, activeTab !== 'me' && { display: 'none' }]}>
+          <MeScreen />
+        </View>
+      </View>
 
       {/* Bottom Tab Bar with YouTube-style safe bottom margin */}
       <View style={[styles.tabBar, { paddingBottom: bottomPadding, height: 52 + bottomPadding }]}>
         {/* Tab 1: HOME */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setActiveTab('home')}
+          onPress={() => {
+            triggerSelectionHaptic();
+            setActiveTab('home');
+          }}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -66,7 +90,10 @@ export default function AppNavigator() {
         {/* Tab 2: SWIPE */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setActiveTab('swipe')}
+          onPress={() => {
+            triggerSelectionHaptic();
+            setActiveTab('swipe');
+          }}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -87,7 +114,10 @@ export default function AppNavigator() {
         {/* Tab 3: DOWNLOADER */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setActiveTab('downloader')}
+          onPress={() => {
+            triggerSelectionHaptic();
+            setActiveTab('downloader');
+          }}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -108,7 +138,10 @@ export default function AppNavigator() {
         {/* Tab 4: ME */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setActiveTab('me')}
+          onPress={() => {
+            triggerSelectionHaptic();
+            setActiveTab('me');
+          }}
           activeOpacity={0.7}
         >
           <Ionicons

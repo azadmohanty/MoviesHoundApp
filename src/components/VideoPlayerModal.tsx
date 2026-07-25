@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -9,15 +9,19 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  Dimensions
+  Dimensions,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { getMediaCredits, getSimilarMedia, getTVShowDetails, CastMember, TMDBMediaItem, TVShowDetails } from '../utils/tmdb';
 import { getStreamServerUrl, resolveStreamUrl } from '../utils/streamResolver';
-import { recordPlaybackDuration } from '../utils/TasteEngine';
+import { recordPlaybackDuration, recordUserAction } from '../utils/TasteEngine';
+import { toggleListItem, isInList, STORAGE_KEYS, subscribeStorageChanges } from '../utils/DatabaseStorage';
+import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic } from '../utils/HapticsHelper';
 
 const { width } = Dimensions.get('window');
 
@@ -65,6 +69,112 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [showTroubleshoot, setShowTroubleshoot] = useState(false);
   const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
   const [selectedLanguage, setSelectedLanguage] = useState<string>('Original');
+
+  // Reaction States & Server Reveal State
+  const [isSaved, setIsSaved] = useState(false);
+  const [isWatchedState, setIsWatchedState] = useState(false);
+  const [isLiked, setIsLiked] = useState(false);
+  const [isLoved, setIsLoved] = useState(false);
+  const [isDisliked, setIsDisliked] = useState(false);
+  const [showServers, setShowServers] = useState(false);
+
+  // Multi-Heart Floating Particle Burst Animation State
+  const [particles, setParticles] = useState<Array<{ id: number; animX: Animated.Value; animY: Animated.Value; opacity: Animated.Value; scale: Animated.Value }>>([]);
+
+  const checkUserStates = async () => {
+    if (!mediaItem) return;
+    const mType = mediaItem.mediaType || 'movie';
+    const [saved, watched, liked, loved, disliked] = await Promise.all([
+      isInList(STORAGE_KEYS.WATCHLIST, mediaItem.id, mType),
+      isInList(STORAGE_KEYS.WATCHED, mediaItem.id, mType),
+      isInList(STORAGE_KEYS.LIKED, mediaItem.id, mType),
+      isInList(STORAGE_KEYS.LOVED, mediaItem.id, mType),
+      isInList(STORAGE_KEYS.DISLIKED, mediaItem.id, mType),
+    ]);
+    setIsSaved(saved);
+    setIsWatchedState(watched);
+    setIsLiked(liked);
+    setIsLoved(loved);
+    setIsDisliked(disliked);
+  };
+
+  useEffect(() => {
+    if (visible && mediaItem) {
+      checkUserStates();
+    }
+  }, [visible, mediaItem]);
+
+  const triggerHeartBurst = () => {
+    const newParticles = Array.from({ length: 12 }, (_, i) => ({
+      id: Date.now() + i,
+      animX: new Animated.Value((Math.random() - 0.5) * 80),
+      animY: new Animated.Value(0),
+      opacity: new Animated.Value(1),
+      scale: new Animated.Value(0.8 + Math.random() * 1.0),
+    }));
+
+    setParticles(prev => [...prev, ...newParticles]);
+
+    newParticles.forEach((p) => {
+      Animated.parallel([
+        Animated.timing(p.animY, {
+          toValue: -120 - Math.random() * 60,
+          duration: 1400 + Math.random() * 600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(p.opacity, {
+          toValue: 0,
+          duration: 1400 + Math.random() * 600,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+
+    setTimeout(() => {
+      setParticles([]);
+    }, 2200);
+  };
+
+  const handleToggleSaved = async () => {
+    if (!mediaItem) return;
+    triggerLightHaptic();
+    await toggleListItem(STORAGE_KEYS.WATCHLIST, mediaItem);
+    if (onToggleWatchlist) onToggleWatchlist();
+    checkUserStates();
+  };
+
+  const handleToggleWatchedItem = async () => {
+    if (!mediaItem) return;
+    triggerMediumHaptic();
+    await toggleListItem(STORAGE_KEYS.WATCHED, mediaItem);
+    if (onToggleWatched) onToggleWatched();
+    checkUserStates();
+  };
+
+  const handleToggleLike = async () => {
+    if (!mediaItem) return;
+    triggerLightHaptic();
+    await toggleListItem(STORAGE_KEYS.LIKED, mediaItem);
+    recordUserAction(mediaItem, 'liked');
+    checkUserStates();
+  };
+
+  const handleToggleLove = async () => {
+    if (!mediaItem) return;
+    triggerSuccessHaptic();
+    triggerHeartBurst();
+    await toggleListItem(STORAGE_KEYS.LOVED, mediaItem);
+    recordUserAction(mediaItem, 'loved');
+    checkUserStates();
+  };
+
+  const handleToggleDislike = async () => {
+    if (!mediaItem) return;
+    triggerLightHaptic();
+    await toggleListItem(STORAGE_KEYS.DISLIKED, mediaItem);
+    recordUserAction(mediaItem, 'disliked');
+    checkUserStates();
+  };
 
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -450,32 +560,84 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <Text style={styles.metaSubText}>{(mediaItem.mediaType || 'movie').toUpperCase()}</Text>
               </View>
 
-              {/* Action Buttons Row: Watched & Watchlist */}
-              <View style={styles.actionRow}>
+              {/* 5-Item Circular Glassmorphic Reaction Bar (Clean Vector Icons, LOVE in Center) */}
+              <View style={styles.glassCircleToolbar}>
+                {/* 1. Bookmark / Watchlist */}
                 <TouchableOpacity
-                  style={[styles.actionPill, isWatched && styles.actionPillActive]}
-                  onPress={onToggleWatched}
+                  style={[styles.glassCircleBtn, isSaved && styles.glassCircleSaved]}
+                  onPress={handleToggleSaved}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.actionPillText, isWatched && { color: '#0A0A0C' }]}>
-                    {isWatched ? '✓ WATCHED' : '+ MARK WATCHED'}
-                  </Text>
+                  <Ionicons name={isSaved ? "bookmark" : "bookmark-outline"} size={20} color={isSaved ? "#FF2D55" : "rgba(255,255,255,0.7)"} />
                 </TouchableOpacity>
 
+                {/* 2. Watched */}
                 <TouchableOpacity
-                  style={[styles.actionPill, isSavedWatchlist && styles.actionPillSaved]}
-                  onPress={onToggleWatchlist}
+                  style={[styles.glassCircleBtn, isWatchedState && styles.glassCircleWatched]}
+                  onPress={handleToggleWatchedItem}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.actionPillText, isSavedWatchlist && { color: '#FF2D55' }]}>
-                    {isSavedWatchlist ? '★ WATCHLIST' : '+ WATCHLIST'}
-                  </Text>
+                  <Ionicons name={isWatchedState ? "checkmark-circle" : "checkmark-circle-outline"} size={20} color={isWatchedState ? "#00FF88" : "rgba(255,255,255,0.7)"} />
                 </TouchableOpacity>
+
+                {/* 3. LOVE (DEAD CENTER) */}
+                <TouchableOpacity
+                  style={[styles.glassCircleBtn, styles.glassCircleCenter, isLoved && styles.glassCircleLoved]}
+                  onPress={handleToggleLove}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name={isLoved ? "heart" : "heart-outline"} size={24} color={isLoved ? "#FF2D55" : "#FF2D55"} />
+                </TouchableOpacity>
+
+                {/* 4. LIKE (YouTube-Style Thumb Up) */}
+                <TouchableOpacity
+                  style={[styles.glassCircleBtn, isLiked && styles.glassCircleLiked]}
+                  onPress={handleToggleLike}
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons name={isLiked ? "thumb-up" : "thumb-up-outline"} size={22} color={isLiked ? "#FFE500" : "rgba(255,255,255,0.7)"} />
+                </TouchableOpacity>
+
+                {/* 5. DISLIKE (YouTube-Style Thumb Down) */}
+                <TouchableOpacity
+                  style={[styles.glassCircleBtn, isDisliked && styles.glassCircleDisliked]}
+                  onPress={handleToggleDislike}
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons name={isDisliked ? "thumb-down" : "thumb-down-outline"} size={22} color={isDisliked ? "#FF3B30" : "rgba(255,255,255,0.7)"} />
+                </TouchableOpacity>
+
+                {/* Multi-Heart Particle Burst Overlay */}
+                <View style={styles.particleContainer} pointerEvents="none">
+                  {particles.map((p) => (
+                    <Animated.View
+                      key={p.id}
+                      style={[
+                        styles.particleHeart,
+                        {
+                          transform: [
+                            { translateX: p.animX },
+                            { translateY: p.animY },
+                            { scale: p.scale },
+                          ],
+                          opacity: p.opacity,
+                        },
+                      ]}
+                    >
+                      <Ionicons name="heart" size={26} color="#FF2D55" />
+                    </Animated.View>
+                  ))}
+                </View>
               </View>
 
               {/* Side-By-Side Primary Action Row: STREAM NOW & DOWNLOAD */}
               <View style={styles.primaryActionRow}>
                 <TouchableOpacity
                   style={styles.streamActionButton}
-                  onPress={() => updatePlayerUrl(selectedServer, currentSeason, currentEpisode)}
+                  onPress={() => {
+                    setShowServers(true);
+                    updatePlayerUrl(selectedServer, currentSeason, currentEpisode);
+                  }}
                   activeOpacity={0.8}
                 >
                   <Text style={styles.streamActionText}>▶ STREAM NOW</Text>
@@ -498,18 +660,12 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
               <Text style={styles.overviewText}>{mediaItem.overview || 'NO OVERVIEW AVAILABLE.'}</Text>
 
-              {/* Multi-Server Selector Row */}
-              <View style={styles.tvSection}>
-                <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
-                  {[1, 2, 3, 4, 5].map((idx) => {
-                    let label = `SERVER ${idx}`;
-                    if (idx === 1) label = 'SERVER 1 (FAST 480P MP4)';
-                    if (idx === 2) label = 'SERVER 2 (MOVIEBOX MP4)';
-                    if (idx === 3) label = 'SERVER 3 (VIDSRC 2.RU)';
-                    if (idx === 4) label = 'SERVER 4 (SUPEREMBED)';
-                    if (idx === 5) label = 'SERVER 5 (ANYEMBED)';
-                    return (
+              {/* Multi-Server Selector Row (Reveals only after STREAM NOW click) */}
+              {showServers && (
+                <View style={styles.tvSection}>
+                  <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
+                    {[1, 2, 3, 4, 5].map((idx) => (
                       <TouchableOpacity
                         key={`server-${idx}`}
                         style={[
@@ -522,13 +678,13 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                           styles.serverPillText,
                           selectedServer === idx ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
                         ]}>
-                          {label}
+                          SERVER {idx}
                         </Text>
                       </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
 
               {/* Dynamic Audio Dub Selector for MovieBox */}
               {selectedServer === 2 && availableLanguages.length > 1 && (
@@ -639,9 +795,35 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 </View>
               )}
 
-              {/* Lead Cast & Key Crew Avatars */}
+              {/* Row 1: Director & Key Crew */}
               <View style={styles.extraSection}>
-                <Text style={styles.sectionHeading}>CAST & CREW</Text>
+                <Text style={styles.sectionHeading}>DIRECTOR & CREW</Text>
+                {loadingDetails ? (
+                  <ActivityIndicator size="small" color="#FF2D55" style={{ marginVertical: 12 }} />
+                ) : (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.castScroll}>
+                    {castList
+                      .filter(p => !p.character || p.character.toLowerCase().includes('director') || p.character.toLowerCase().includes('writer') || p.character.toLowerCase().includes('creator'))
+                      .concat(castList.slice(0, 2))
+                      .slice(0, 8)
+                      .map((person, idx) => (
+                        <TouchableOpacity
+                          key={`crew-${person.id}-${idx}`}
+                          style={styles.castCard}
+                          onPress={() => onSelectArtist && onSelectArtist(person.id, person.name)}
+                        >
+                          <Image source={{ uri: person.profileUrl }} style={styles.avatarImage} />
+                          <Text style={styles.castName} numberOfLines={1}>{person.name}</Text>
+                          <Text style={styles.castRole} numberOfLines={1}>{person.character || 'DIRECTOR / CREW'}</Text>
+                        </TouchableOpacity>
+                      ))}
+                  </ScrollView>
+                )}
+              </View>
+
+              {/* Row 2: Top Cast & Starring */}
+              <View style={styles.extraSection}>
+                <Text style={styles.sectionHeading}>TOP CAST & STARRING</Text>
                 {loadingDetails ? (
                   <ActivityIndicator size="small" color="#FF2D55" style={{ marginVertical: 12 }} />
                 ) : (
@@ -654,7 +836,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                       >
                         <Image source={{ uri: person.profileUrl }} style={styles.avatarImage} />
                         <Text style={styles.castName} numberOfLines={1}>{person.name}</Text>
-                        <Text style={styles.castRole} numberOfLines={1}>{person.character}</Text>
+                        <Text style={styles.castRole} numberOfLines={1}>{person.character || 'STARRING'}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
@@ -1126,5 +1308,64 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#0A0A0C',
     letterSpacing: 1.2,
+  },
+  glassCircleToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 14,
+    width: '100%',
+    paddingHorizontal: 8,
+    position: 'relative',
+  },
+  glassCircleBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  glassCircleCenter: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderColor: 'rgba(255, 45, 85, 0.35)',
+    backgroundColor: 'rgba(255, 45, 85, 0.15)',
+  },
+  glassCircleSaved: {
+    backgroundColor: 'rgba(255, 45, 85, 0.2)',
+    borderColor: '#FF2D55',
+  },
+  glassCircleWatched: {
+    backgroundColor: 'rgba(0, 255, 136, 0.2)',
+    borderColor: '#00FF88',
+  },
+  glassCircleLiked: {
+    backgroundColor: 'rgba(255, 229, 0, 0.2)',
+    borderColor: '#FFE500',
+  },
+  glassCircleLoved: {
+    backgroundColor: 'rgba(255, 45, 85, 0.3)',
+    borderColor: '#FF2D55',
+  },
+  glassCircleDisliked: {
+    backgroundColor: 'rgba(255, 59, 48, 0.2)',
+    borderColor: '#FF3B30',
+  },
+  particleContainer: {
+    position: 'absolute',
+    top: -20,
+    left: '50%',
+    width: 100,
+    height: 100,
+    marginLeft: -50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  particleHeart: {
+    position: 'absolute',
   },
 });

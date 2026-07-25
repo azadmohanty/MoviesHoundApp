@@ -27,12 +27,12 @@ export const getStreamServerUrl = (
   const cleanAny = anyembedBase.replace(/\/$/, '');
 
   if (serverIndex === 1) {
-    // FAST 480P MP4 (Dynamically resolved)
-    return `fast480p://${tmdbId}`;
-  }
-  if (serverIndex === 2) {
     // MovieBox Direct MP4 (Dynamically resolved)
     return `moviebox://${tmdbId}`;
+  }
+  if (serverIndex === 2) {
+    // FAST 480P MP4 (FzMovies Dynamically resolved)
+    return `fast480p://${tmdbId}`;
   }
   if (serverIndex === 3) {
     // VidSrc 2.RU (Native VidSrc embed mirror)
@@ -67,26 +67,8 @@ export const resolveStreamUrl = async (
   imdbId?: string
 ): Promise<StreamResult | null> => {
   try {
-    // Server 1: FAST 480P MP4 (FzMovies Engine)
+    // Server 1: MovieBox Direct MP4
     if (serverIndex === 1) {
-      if (!title) return null;
-
-      // FzMovies Fast 480p MP4 Scraper (Movies Only)
-      const fzStream = await resolveFzMoviesStream(title, year, imdbId, mediaType);
-      if (fzStream && fzStream.url && fzStream.url.startsWith('http')) {
-        return {
-          streamUrl: fzStream.url,
-          sourceName: fzStream.qualityLabel || 'FAST 480P MP4',
-          isDirectStream: true
-        };
-      }
-
-      // FzMovies found nothing — return null so caller handles fallback cleanly
-      return null;
-    }
-
-    // Server 2: MovieBox Direct MP4
-    if (serverIndex === 2) {
       if (!title) return null;
       const mbStream = await resolveMovieBoxStream(
         title,
@@ -98,12 +80,28 @@ export const resolveStreamUrl = async (
       if (mbStream && mbStream.url && mbStream.url.startsWith('http')) {
         return {
           streamUrl: mbStream.url,
-          sourceName: mbStream.qualityLabel || 'MovieBox MP4',
+          sourceName: mbStream.qualityLabel || 'MOVIEBOX MP4',
           isDirectStream: true,
           language: mbStream.language,
           availableLanguages: mbStream.availableLanguages
         };
       }
+      return null;
+    }
+
+    // Server 2: FAST 480P MP4 (FzMovies Engine)
+    if (serverIndex === 2) {
+      if (!title) return null;
+
+      const fzStream = await resolveFzMoviesStream(title, year, imdbId, mediaType);
+      if (fzStream && fzStream.url && fzStream.url.startsWith('http')) {
+        return {
+          streamUrl: fzStream.url,
+          sourceName: fzStream.qualityLabel || 'FAST 480P MP4',
+          isDirectStream: true
+        };
+      }
+
       return null;
     }
 
