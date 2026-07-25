@@ -55,8 +55,11 @@ const BackCard: React.FC<{ card: TMDBMediaItem }> = ({ card }) => (
   </View>
 );
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
-export default function SwipeScreen() {
+interface SwipeScreenProps {
+  onNavigateToDownloader?: (query: string, mediaType?: string, imdbId?: string, year?: string) => void;
+}
+
+export default function SwipeScreen({ onNavigateToDownloader }: SwipeScreenProps = {}) {
   const insets                             = useSafeAreaInsets();
   const [cards, setCards]                   = useState<TMDBMediaItem[]>([]);
   const [currentIndex, setCurrentIndex]     = useState(0);
@@ -376,6 +379,17 @@ export default function SwipeScreen() {
           title={streamItem.title}
           mediaItem={streamItem}
           onClose={() => setPlayerVisible(false)}
+          onDownloadPress={() => {
+            setPlayerVisible(false);
+            if (onNavigateToDownloader && streamItem) {
+              onNavigateToDownloader(
+                streamItem.title,
+                streamItem.mediaType || 'movie',
+                '',
+                streamItem.releaseDate ? streamItem.releaseDate.split('-')[0] : undefined
+              );
+            }
+          }}
         />
       )}
     </View>

@@ -40,7 +40,11 @@ const { width } = Dimensions.get('window');
 // Math for 3 equal columns: screen width minus 32px padding minus 2 * 12px gap = width - 56
 const GRID_ITEM_WIDTH = Math.floor((width - 56) / 3);
 
-export default function MeScreen() {
+interface MeScreenProps {
+  onNavigateToDownloader?: (query: string, mediaType?: string, imdbId?: string, year?: string) => void;
+}
+
+export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {}) {
   // 3 Primary Streamlined Tabs (Concept 1: Letterboxd Media Hub)
   const [activeMainTab, setActiveMainTab] = useState<'library' | 'history' | 'system'>('library');
   
@@ -713,6 +717,17 @@ export default function MeScreen() {
           onClose={() => {
             setPlayerVisible(false);
             setActiveMediaItem(null);
+          }}
+          onDownloadPress={() => {
+            setPlayerVisible(false);
+            if (onNavigateToDownloader && activeMediaItem) {
+              onNavigateToDownloader(
+                activeMediaItem.title,
+                activeMediaItem.mediaType || 'movie',
+                '',
+                activeMediaItem.releaseDate ? activeMediaItem.releaseDate.split('-')[0] : undefined
+              );
+            }
           }}
         />
       )}

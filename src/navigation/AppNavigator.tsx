@@ -45,7 +45,7 @@ export default function AppNavigator() {
           <HomeScreen onNavigateToDownloader={handleNavigateToDownloader} />
         </View>
         <View style={[StyleSheet.absoluteFillObject, activeTab !== 'swipe' && { display: 'none' }]}>
-          <SwipeScreen />
+          <SwipeScreen onNavigateToDownloader={handleNavigateToDownloader} />
         </View>
         <View style={[StyleSheet.absoluteFillObject, activeTab !== 'downloader' && { display: 'none' }]}>
           <DownloaderScreen
@@ -57,7 +57,7 @@ export default function AppNavigator() {
           />
         </View>
         <View style={[StyleSheet.absoluteFillObject, activeTab !== 'me' && { display: 'none' }]}>
-          <MeScreen />
+          <MeScreen onNavigateToDownloader={handleNavigateToDownloader} />
         </View>
       </View>
 

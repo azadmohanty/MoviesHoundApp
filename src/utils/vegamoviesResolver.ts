@@ -43,11 +43,13 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
     const audioMatch = headerText.match(/hindi[^|\]]*|dual audio|org(?:inal)?/i);
     const audioTracks = audioMatch ? 'Hindi + English' : 'English';
 
-    const seasonMatch = headerText.match(/Season\s*(\d+)/i) || html.substring(0, 3000).match(/Season\s*(\d+)/i);
+    const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
+    const seasonMatch = headerText.match(/Season\s*(\d+)/i) || mainTitle.match(/Season\s*(\d+)/i);
     const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
-    const isSeriesArticle = /season|s0\d|episodes|series/i.test(headerText) || /season|s0\d|episodes|series/i.test(html.substring(0, 2000));
+    const isSeriesArticle = /season|s0\d|episodes|series/i.test(headerText) || /season|s0\d|episodes|series/i.test(mainTitle);
 
-    const links = [...sectionHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]{0,150}?)<\/a>/gi)];
+    const links = [...sectionHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
     links.forEach((l) => {
       const href = l[1];
@@ -241,7 +243,7 @@ export async function fetchVegaMoviesEpisodes(
     const episodes: SeriesEpisodeItem[] = [];
 
     // Extract all episode links (Episode 01, Episode 02, etc. or VCloud episode anchors)
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]{0,150}?)<\/a>/gi)];
+    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
     links.forEach((l) => {
       const href = l[1];
