@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Image } from 'expo-image';
 import {
   StyleSheet,
   View,
@@ -7,7 +8,6 @@ import {
   Text,
   StatusBar,
   ScrollView,
-  Image,
   ActivityIndicator,
   Dimensions,
   Animated,

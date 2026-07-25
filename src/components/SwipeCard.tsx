@@ -10,11 +10,11 @@
  */
 
 import React, { useRef, useCallback } from 'react';
+import { Image } from 'expo-image';
 import {
   View,
   Text,
   StyleSheet,
-  Image,
   Animated,
   PanResponder,
   Dimensions,
@@ -178,7 +178,7 @@ const SwipeCard: React.FC<SwipeCardProps> = ({
         <Image
           source={{ uri: card.posterUrl }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"
+          contentFit="cover"
         />
 
         {/* Gradient overlay */}

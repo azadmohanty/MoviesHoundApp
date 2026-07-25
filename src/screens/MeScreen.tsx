@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Image } from 'expo-image';
 import {
   View,
   Text,
@@ -8,7 +9,6 @@ import {
   TextInput,
   Switch,
   Alert,
-  Image,
   ActivityIndicator,
   Modal,
   Dimensions,

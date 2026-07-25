@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Image } from 'expo-image';
+import { FlashList } from '@shopify/flash-list';
 import {
   StyleSheet,
   Text,
@@ -9,7 +11,6 @@ import {
   ActivityIndicator,
   StatusBar,
   Linking,
-  Image,
   ScrollView,
   Switch,
   Modal,
@@ -872,7 +873,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             source={{ uri: currentBackdrop }}
             style={{ width: '100%', height: '100%', opacity: 0.85 }}
             blurRadius={28}
-            resizeMode="cover"
+            contentFit="cover"
           />
         )}
         {nextBackdrop && (
