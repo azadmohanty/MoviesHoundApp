@@ -611,7 +611,7 @@ export async function resolveVegaMovies480pStream(
           const episodes = await fetchVegaMoviesEpisodes(locker.targetUrl);
           console.log(`[VegaMoviesStream] Locker returned ${episodes.length} episodes`);
           const singleEpisodes = episodes.filter(
-            (e) => !/\b(?:batch|zip|pack)\b/i.test(e.targetUrl) && !/\b(?:batch|zip|pack)\b/i.test(e.episodeTitle)
+            (e) => !/\b(?:batch|zip_file|pack_file)\b/i.test(e.episodeTitle)
           );
 
           if (singleEpisodes.length > 0) {
