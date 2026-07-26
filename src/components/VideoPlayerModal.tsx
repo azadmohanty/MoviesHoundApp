@@ -330,6 +330,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       activeUrl.includes('.m3u8') ||
       activeUrl.includes('r2.cloudflarestorage.com') ||
       activeUrl.includes('r2.dev') ||
+      activeUrl.includes('googleusercontent.com') ||
       activeUrl.includes('.webm') ||
       activeUrl.includes('.ts') ||
       activeUrl.includes('hakunaymatata.com')

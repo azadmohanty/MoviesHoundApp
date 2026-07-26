@@ -362,7 +362,7 @@ export default function DownloaderScreen({
 
     const targetUrl = customUrl || item.targetUrl;
 
-    if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox') {
+    if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox' || targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
       if (action === 'download') {
         Linking.openURL(targetUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {

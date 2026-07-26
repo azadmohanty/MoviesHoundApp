@@ -372,6 +372,7 @@ export function isStreamableVideoUrl(url: string | null | undefined): boolean {
     url.includes('.m3u8') ||
     url.includes('r2.cloudflarestorage.com') ||
     url.includes('r2.dev') ||
+    url.includes('googleusercontent.com') ||
     url.includes('.webm') ||
     url.includes('.ts') ||
     url.includes('hakunaymatata.com')
@@ -386,6 +387,19 @@ export async function resolveVegaMoviesLocker(
   qualityLabel: string = '720p'
 ): Promise<ResolvedStreamResult> {
   try {
+    // Direct VCloud URL handling (e.g. from Downloader episode buttons)
+    if (targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
+      const directUrl = await resolveVcloudDirectStream(targetUrl, qualityLabel);
+      if (directUrl) {
+        return {
+          success: true,
+          streamUrl: directUrl,
+          providerName: 'VEGAMOVIES [VCLOUD DIRECT]',
+          qualityLabel,
+        };
+      }
+    }
+
     const res = await fetch(targetUrl, {
       headers: { 'User-Agent': UA, 'Referer': BASE_DOMAIN + '/' },
     });
