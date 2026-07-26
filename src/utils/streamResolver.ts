@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveFzMoviesStream } from './fzmoviesResolver';
 import { resolveMovieBoxStream } from './movieboxResolver';
-import { resolveTorrentioStream } from './torrentioResolver';
+import { resolveVegaMovies480pStream } from './vegamoviesResolver';
 
 export type StreamResult = {
   streamUrl: string;
@@ -27,27 +27,31 @@ export const getStreamServerUrl = (
   const cleanAny = anyembedBase.replace(/\/$/, '');
 
   if (serverIndex === 1) {
-    // MovieBox Direct MP4 (Dynamically resolved)
-    return `moviebox://${tmdbId}`;
+    // Server 1: VEGAMOVIES 480P MKV STREAM
+    return `vegamovies480p://${tmdbId}`;
   }
   if (serverIndex === 2) {
-    // FAST 480P MP4 (FzMovies Dynamically resolved)
-    return `fast480p://${tmdbId}`;
+    // Server 2: MOVIEBOX DIRECT MP4
+    return `moviebox://${tmdbId}`;
   }
   if (serverIndex === 3) {
-    // VidSrc 2.RU (Native VidSrc embed mirror)
+    // Server 3: FAST 480P MP4 (FzMovies Engine)
+    return `fast480p://${tmdbId}`;
+  }
+  if (serverIndex === 4) {
+    // Server 4: VidSrc 2.RU Embed
     return mediaType === 'tv'
       ? `${cleanBase}/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
       : `${cleanBase}/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
   }
-  if (serverIndex === 4) {
-    // SuperEmbed Player (Native multi-server iframe)
+  if (serverIndex === 5) {
+    // Server 5: SuperEmbed Player
     return mediaType === 'tv'
       ? `${cleanSuper}/?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`
       : `${cleanSuper}/?video_id=${tmdbId}&tmdb=1`;
   }
-  if (serverIndex === 5) {
-    // AnyEmbed (formerly SmashyStream)
+  if (serverIndex === 6) {
+    // Server 6: AnyEmbed (formerly SmashyStream)
     return mediaType === 'tv'
       ? `${cleanAny}/embed/tmdb-tv-${tmdbId}-${season}-${episode}`
       : `${cleanAny}/embed/tmdb-movie-${tmdbId}`;
@@ -67,8 +71,42 @@ export const resolveStreamUrl = async (
   imdbId?: string
 ): Promise<StreamResult | null> => {
   try {
-    // Server 1: MovieBox Direct MP4
+    // Server 1: VEGAMOVIES 480P MKV STREAM
     if (serverIndex === 1) {
+      if (!title) return null;
+
+      let liveVegaDomain = 'https://vegamovies.navy';
+      try {
+        const cached = await AsyncStorage.getItem('@domains_cache');
+        if (cached) {
+          const { domains } = JSON.parse(cached);
+          if (domains && domains.vegamovies) {
+            liveVegaDomain = domains.vegamovies;
+          }
+        }
+      } catch (e) {}
+
+      const vegaStream = await resolveVegaMovies480pStream(
+        title,
+        year,
+        imdbId,
+        mediaType,
+        season,
+        episode,
+        liveVegaDomain
+      );
+      if (vegaStream && vegaStream.url && vegaStream.url.startsWith('http')) {
+        return {
+          streamUrl: vegaStream.url,
+          sourceName: vegaStream.qualityLabel || 'VEGAMOVIES 480P MKV',
+          isDirectStream: true
+        };
+      }
+      return null;
+    }
+
+    // Server 2: MOVIEBOX DIRECT MP4
+    if (serverIndex === 2) {
       if (!title) return null;
       const mbStream = await resolveMovieBoxStream(
         title,
@@ -89,8 +127,8 @@ export const resolveStreamUrl = async (
       return null;
     }
 
-    // Server 2: FAST 480P MP4 (FzMovies Engine)
-    if (serverIndex === 2) {
+    // Server 3: FAST 480P MP4 (FzMovies Engine)
+    if (serverIndex === 3) {
       if (!title) return null;
 
       const fzStream = await resolveFzMoviesStream(title, year, imdbId, mediaType);
@@ -105,19 +143,19 @@ export const resolveStreamUrl = async (
       return null;
     }
 
-    // Server 3: VidSrc 2.RU Direct Player
-    if (serverIndex === 3) {
+    // Server 4: VidSrc 2.RU Direct Player
+    if (serverIndex === 4) {
       const vidsrcUrl = mediaType === 'tv'
         ? `https://vidsrc2.ru/embed/tv/${tmdbId}/${season}/${episode}?color=FF2D55&autoplay=1`
         : `https://vidsrc2.ru/embed/movie/${tmdbId}?color=FF2D55&autoplay=1`;
       return {
         streamUrl: vidsrcUrl,
-        sourceName: 'Server 3 (VidSrc 2.RU)',
+        sourceName: 'Server 4 (VidSrc 2.RU)',
         isDirectStream: false
       };
     }
 
-    // Embed Fallbacks (Servers 4, 5)
+    // Embed Fallbacks (Servers 5, 6)
     const domainsRaw = await AsyncStorage.getItem('@domains_cache');
     let vidsrcBase = 'https://vidsrc2.ru';
     let superembedBase = 'https://multiembed.mov';

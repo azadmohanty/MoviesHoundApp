@@ -69,6 +69,11 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [customApi, setCustomApi] = useState('');
 
+  // Engine Provider Control & Preferences
+  const [disabledProviders, setDisabledProviders] = useState<string[]>([]);
+  const [defaultQuality, setDefaultQuality] = useState<'480p' | '720p' | '1080p' | '4K'>('720p');
+  const [scraperTimeoutMs, setScraperTimeoutMs] = useState<number>(6000);
+
   // Diagnostics & Scrapers Health
   const [resolvedDomains, setResolvedDomains] = useState<Record<string, string>>({});
   const [pingStatus, setPingStatus] = useState<
@@ -126,6 +131,9 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
         api,
         accent,
         storedName,
+        disabledJson,
+        defQual,
+        timeoutStr,
       ] = await Promise.all([
         getList(STORAGE_KEYS.WATCHLIST),
         getList(STORAGE_KEYS.WATCHED),
@@ -138,6 +146,9 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
         getStorageString(STORAGE_KEYS.PROXY_API),
         getStorageString(STORAGE_KEYS.ACCENT_COLOR, '#FF2D55'),
         getStorageString('@user_display_name', 'CHIEF'),
+        getStorageString('@disabled_providers', '[]'),
+        getStorageString('@default_quality', '720p'),
+        getStorageString('@scraper_timeout', '6000'),
       ]);
 
       setWatchLater(wl);
@@ -152,6 +163,11 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
       if (api) setCustomApi(api);
       if (accent) setAccentColor(accent);
       if (storedName) setUserName(storedName);
+      if (disabledJson) {
+        try { setDisabledProviders(JSON.parse(disabledJson)); } catch (e) {}
+      }
+      if (defQual) setDefaultQuality(defQual as any);
+      if (timeoutStr) setScraperTimeoutMs(parseInt(timeoutStr, 10) || 6000);
     } catch (e) {
       console.error('Failed to load user settings/lists:', e);
     }
@@ -362,7 +378,7 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
           }}
         >
           <Text style={[styles.primaryTabText, activeMainTab === 'system' && { color: accentColor }]}>
-            SYSTEM & BACKUP
+            SETTINGS
           </Text>
         </TouchableOpacity>
       </View>
@@ -613,28 +629,93 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
             <View style={styles.divider} />
 
             {/* System Diagnostics & Scrapers Health */}
-            <Text style={styles.sectionTitle}>SYSTEM DIAGNOSTICS & ENGINE LATENCY</Text>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>SCRAPER ENGINE LATENCY & CONTROL</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  triggerSelectionHaptic();
+                  const ALL_SCRAPER_ENGINES = [
+                    { key: 'vegamovies', url: resolvedDomains.vegamovies || 'https://vegamovies.navy' },
+                    { key: 'rogmovies', url: resolvedDomains.rogmovies || 'https://rogmovies.rest' },
+                    { key: 'moviesmod', url: resolvedDomains.moviesmod || 'https://moviesmod.at' },
+                    { key: 'topmovies', url: resolvedDomains.topmovies || 'https://moviesleech.asia' },
+                    { key: 'fzmovies', url: 'https://fzmovies.net' },
+                    { key: 'bollyflix', url: resolvedDomains.bollyflix || 'https://bollyflix.org' },
+                    { key: 'moviebox', url: 'https://moviebox.live' },
+                    { key: 'vidsrc', url: 'https://vidsrc2.ru' },
+                    { key: 'tmdb', url: 'https://api.tmdb.org/3/configuration' },
+                  ];
+                  ALL_SCRAPER_ENGINES.forEach((eng) => runPingCheck(eng.key, eng.url));
+                }}
+              >
+                <Text style={[styles.exportListLink, { color: accentColor }]}>⚡ PING ALL ENGINES</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.diagGrid}>
               {[
-                { name: 'TMDB API', key: 'tmdb', url: 'https://api.tmdb.org/3/configuration' },
-                { name: 'FzMovies Engine', key: 'fzmovies', url: 'https://fzmovies.net' },
-                { name: 'MovieBox Engine', key: 'moviebox', url: 'https://moviebox.live' },
-                { name: 'VidSrc Direct', key: 'vidsrc', url: 'https://vidsrc2.ru' },
+                { name: 'VegaMovies (Hollywood 1)', key: 'vegamovies', color: '#FFE500', url: resolvedDomains.vegamovies || 'https://vegamovies.navy' },
+                { name: 'RogMovies (Bollywood 1)', key: 'rogmovies', color: '#FFE500', url: resolvedDomains.rogmovies || 'https://rogmovies.rest' },
+                { name: 'MoviesMod (Hollywood 2)', key: 'moviesmod', color: '#00E5FF', url: resolvedDomains.moviesmod || 'https://moviesmod.at' },
+                { name: 'TopMovies (Bollywood 2)', key: 'topmovies', color: '#00E5FF', url: resolvedDomains.topmovies || 'https://moviesleech.asia' },
+                { name: 'FzMovies Engine', key: 'fzmovies', color: '#00FF66', url: 'https://fzmovies.net' },
+                { name: 'BollyFlix Engine', key: 'bollyflix', color: '#FF0055', url: resolvedDomains.bollyflix || 'https://bollyflix.org' },
+                { name: 'MovieBox Engine', key: 'moviebox', color: '#A855F7', url: 'https://moviebox.live' },
+                { name: 'VidSrc Direct', key: 'vidsrc', color: '#3B82F6', url: 'https://vidsrc2.ru' },
+                { name: 'TMDB API Gateway', key: 'tmdb', color: '#38EF7D', url: 'https://api.tmdb.org/3/configuration' },
               ].map((site) => {
                 const ping = pingStatus[site.key];
+                const isDisabled = disabledProviders.includes(site.key);
                 return (
-                  <View key={site.key} style={styles.diagCard}>
+                  <View key={site.key} style={[styles.diagCard, isDisabled && { opacity: 0.5 }]}>
                     <View style={styles.diagHeader}>
-                      <Text style={styles.diagName}>{site.name}</Text>
-                      <TouchableOpacity onPress={() => runPingCheck(site.key, site.url)}>
-                        <Ionicons name="refresh-circle-outline" size={20} color="rgba(255,255,255,0.6)" />
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={[styles.providerDot, { backgroundColor: site.color }]} />
+                        <Text style={[styles.diagName, { color: isDisabled ? 'rgba(255,255,255,0.4)' : '#FFFFFF' }]}>
+                          {site.name}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <TouchableOpacity onPress={() => runPingCheck(site.key, site.url)}>
+                          <Ionicons name="refresh-circle-outline" size={20} color={site.color} />
+                        </TouchableOpacity>
+                        {site.key !== 'tmdb' && (
+                          <Switch
+                            value={!isDisabled}
+                            onValueChange={async () => {
+                              triggerSelectionHaptic();
+                              const updated = isDisabled
+                                ? disabledProviders.filter((k) => k !== site.key)
+                                : [...disabledProviders, site.key];
+                              setDisabledProviders(updated);
+                              await setStorageString('@disabled_providers', JSON.stringify(updated));
+                            }}
+                            trackColor={{ false: '#1E1E24', true: `${site.color}80` }}
+                            thumbColor={!isDisabled ? site.color : '#888'}
+                          />
+                        )}
+                      </View>
                     </View>
-                    <Text style={styles.diagStatus}>
-                      {!ping || ping.status === 'idle'
+                    <Text
+                      style={[
+                        styles.diagStatus,
+                        {
+                          color: isDisabled
+                            ? '#FF3B30'
+                            : ping?.status === 'ok'
+                            ? '#00FF88'
+                            : ping?.status === 'error'
+                            ? '#FF9900'
+                            : 'rgba(255, 255, 255, 0.6)',
+                        },
+                      ]}
+                    >
+                      {isDisabled
+                        ? 'DISABLED BY USER'
+                        : !ping || ping.status === 'idle'
                         ? 'TAP REFRESH TO TEST'
                         : ping.status === 'checking'
-                        ? 'TESTING CONNECTION...'
+                        ? 'TESTING LATENCY...'
                         : ping.status === 'ok'
                         ? `ONLINE (${ping.latency}ms)`
                         : 'OFFLINE / BLOCKED'}
@@ -642,6 +723,65 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
                   </View>
                 );
               })}
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Default Quality & Timeout Preference */}
+            <Text style={styles.sectionTitle}>DEFAULT DOWNLOAD QUALITY & TIMEOUT</Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>DEFAULT SCRAPE QUALITY TIER</Text>
+              <View style={styles.accentRow}>
+                {(['480p', '720p', '1080p', '4K'] as const).map((q) => (
+                  <TouchableOpacity
+                    key={q}
+                    style={[
+                      styles.accentPill,
+                      { borderColor: defaultQuality === q ? '#FFE500' : 'rgba(255,255,255,0.2)' },
+                      defaultQuality === q && { backgroundColor: '#FFE500' },
+                    ]}
+                    onPress={() => {
+                      triggerSelectionHaptic();
+                      setDefaultQuality(q);
+                      updateSetting('@default_quality', q);
+                    }}
+                  >
+                    <Text style={[styles.accentPillText, defaultQuality === q ? { color: '#0A0A0C' } : { color: 'rgba(255,255,255,0.7)' }]}>
+                      {q}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>SCRAPER TIMEOUT LIMIT</Text>
+              <View style={styles.accentRow}>
+                {[
+                  { label: '4s (FAST)', value: 4000 },
+                  { label: '6s (BALANCED)', value: 6000 },
+                  { label: '8s (DEEP)', value: 8000 },
+                  { label: '10s (MAX)', value: 10000 },
+                ].map((t) => (
+                  <TouchableOpacity
+                    key={t.value}
+                    style={[
+                      styles.accentPill,
+                      { borderColor: scraperTimeoutMs === t.value ? accentColor : 'rgba(255,255,255,0.2)' },
+                      scraperTimeoutMs === t.value && { backgroundColor: accentColor },
+                    ]}
+                    onPress={() => {
+                      triggerSelectionHaptic();
+                      setScraperTimeoutMs(t.value);
+                      updateSetting('@scraper_timeout', String(t.value));
+                    }}
+                  >
+                    <Text style={[styles.accentPillText, scraperTimeoutMs === t.value ? { color: '#0A0A0C' } : { color: 'rgba(255,255,255,0.7)' }]}>
+                      {t.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
 
             <View style={styles.divider} />
@@ -1069,6 +1209,17 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     marginVertical: 18,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  providerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   diagGrid: {
     gap: 10,

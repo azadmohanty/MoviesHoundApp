@@ -17,6 +17,7 @@ import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from
 import { resolveAllDomains } from '../utils/resolver';
 import { resolveFzMoviesStream } from '../utils/fzmoviesResolver';
 import { sanitizeSearchQuery } from '../utils/FuzzyMatcher';
+import { getStorageString } from '../utils/DatabaseStorage';
 
 // Shared models & site resolvers
 import { ScrapedQualityOption, ResolvedStreamResult } from '../utils/resolverTypes';
@@ -31,7 +32,16 @@ import {
   resolveRogMoviesLocker,
   fetchRogMoviesEpisodes,
 } from '../utils/rogmoviesResolver';
-import { searchMoviesMod, parseMoviesModArticle, resolveMoviesModLocker } from '../utils/moviesmodResolver';
+import {
+  getMoviesModQualityOptions,
+  resolveMoviesModLocker,
+  fetchMoviesModEpisodes,
+} from '../utils/moviesmodResolver';
+import {
+  getTopMoviesQualityOptions,
+  resolveTopMoviesLocker,
+  fetchTopMoviesEpisodes,
+} from '../utils/topmoviesResolver';
 import { searchBollyflix, parseBollyflixArticle, resolveBollyflixLocker } from '../utils/bollyflixResolver';
 import { HARDCODED_FALLBACKS } from '../utils/resolver';
 
@@ -46,6 +56,20 @@ interface DownloaderScreenProps {
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+const PROVIDER_COLORS: Record<string, string> = {
+  vegamovies: '#FFE500', // Yellow (VegaMovies / RogMovies twin family)
+  rogmovies: '#FFE500',  // Yellow (VegaMovies / RogMovies twin family)
+  moviesmod: '#00E5FF',  // Cyan (MoviesMod / TopMovies twin family)
+  topmovies: '#00E5FF',  // Cyan (MoviesMod / TopMovies twin family)
+  fzmovies: '#00FF66',   // Matrix Green
+  bollyflix: '#FF0055',  // Neon Magenta
+};
+
+function getProviderColor(siteKey?: string): string {
+  if (!siteKey) return '#FFE500';
+  return PROVIDER_COLORS[siteKey.toLowerCase()] || '#FFE500';
+}
+
 export default function DownloaderScreen({
   initialSearchQuery = '',
   initialImdbId = '',
@@ -59,10 +83,12 @@ export default function DownloaderScreen({
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [logsExpanded, setLogsExpanded] = useState(false);
 
-  // Filter States
+  // Filter & Grouping States
   const [selectedQuality, setSelectedQuality] = useState<'480p' | '720p' | '1080p' | '4K'>('720p');
   const [seriesMode, setSeriesMode] = useState<'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP'>('SINGLE_EPISODE');
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
+  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
+  const [selectedSeriesProvider, setSelectedSeriesProvider] = useState<ScrapedQualityOption['siteKey'] | null>(null);
 
   // Unified Extracted Options List
   const [options, setOptions] = useState<ScrapedQualityOption[]>([]);
@@ -84,8 +110,14 @@ export default function DownloaderScreen({
     }
   }, [searchTrigger]);
 
-  // Initial mount auto-search
+  // Initial mount auto-search & default quality preference load
   useEffect(() => {
+    getStorageString('@default_quality', '720p').then((q) => {
+      if (q && ['480p', '720p', '1080p', '4K'].includes(q)) {
+        setSelectedQuality(q as any);
+      }
+    });
+
     if (initialSearchQuery && searchTrigger === 0) {
       setQuery(initialSearchQuery);
       handleStartScrape(initialSearchQuery);
@@ -100,93 +132,163 @@ export default function DownloaderScreen({
     setOptions([]);
     setEpisodesList([]);
     setStatusLog([]);
-    setLogsExpanded(false);
   };
 
-  const handleStartScrape = async (searchQuery?: string) => {
-    const q = searchQuery || query;
-    if (!q.trim()) return;
+  const handleStartScrape = async (overrideQuery?: string) => {
+    const activeQ = overrideQuery || query;
+    const cleanQ = sanitizeSearchQuery(activeQ);
+    if (!cleanQ) {
+      Alert.alert('Search Required', 'Please enter a title to search.');
+      return;
+    }
 
-    const cleanQ = sanitizeSearchQuery(q);
     triggerLightHaptic();
     setIsSearching(true);
     resetState();
-    addLog(`Initiating scrape for: "${cleanQ}" (${initialMediaType.toUpperCase()})`);
+    addLog(`Searching options for "${cleanQ}"...`);
 
-    // FzMovies direct MP4 fast lane
-    if (initialMediaType === 'movie') {
-      resolveFzMoviesStream(cleanQ)
-        .then((fzRes) => {
-          if (fzRes && fzRes.url) {
-            addLog('FzMovies: direct MP4 URL found');
-            setOptions((prev) => [
-              {
-                id: `fz-${Date.now()}`,
-                siteKey: 'fzmovies',
-                siteDisplayName: 'FZMOVIES',
-                qualityLabel: '480p',
-                ripFormat: 'MP4 FAST LANE',
-                codec: 'H.264',
-                fileSize: '350 MB',
-                audioTracks: 'English / Dual',
-                contentType: 'MOVIE',
-                seasonNumber: 1,
-                targetUrl: fzRes.url,
-                priorityScore: 0,
-              },
-              ...prev,
-            ]);
+    if (cleanQ.toLowerCase() === 'silo') {
+      addLog('Hardcoded demo fallback triggered');
+      fetch('https://raw.githubusercontent.com/azadmohanty/MoviesHoundApp/main/demo_silo.json')
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data) && data.length > 0) {
+            setOptions(data);
+            addLog(`Loaded ${data.length} fallback options.`);
           }
         })
         .catch(() => {});
     }
 
     try {
+      const [disabledJson, timeoutStr] = await Promise.all([
+        getStorageString('@disabled_providers', '[]'),
+        getStorageString('@scraper_timeout', '6000'),
+      ]);
+
+      let disabledList: string[] = [];
+      try { disabledList = JSON.parse(disabledJson || '[]'); } catch (e) {}
+      const timeoutMs = parseInt(timeoutStr || '6000', 10) || 6000;
+
+      // FzMovies direct MP4 fast lane
+      if (initialMediaType === 'movie' && !disabledList.includes('fzmovies')) {
+        resolveFzMoviesStream(cleanQ)
+          .then((fzRes) => {
+            if (fzRes && fzRes.url) {
+              addLog('FzMovies: direct MP4 URL found');
+              setOptions((prev) => [
+                {
+                  id: `fz-${Date.now()}`,
+                  siteKey: 'fzmovies',
+                  siteDisplayName: 'FZMOVIES',
+                  qualityLabel: '480p',
+                  ripFormat: 'MP4 FAST LANE',
+                  codec: 'H.264',
+                  fileSize: '350 MB',
+                  audioTracks: 'English / Dual',
+                  contentType: 'MOVIE',
+                  seasonNumber: 1,
+                  targetUrl: fzRes.url,
+                  priorityScore: 0,
+                },
+                ...prev,
+              ]);
+            }
+          })
+          .catch(() => {});
+      }
+
       addLog('Resolving live provider domains...');
       const liveDomains = await resolveAllDomains((msg) => addLog(msg));
 
       const createController = () => {
         const controller = new AbortController();
-        setTimeout(() => controller.abort(), 6000);
+        setTimeout(() => controller.abort(), timeoutMs);
         return controller.signal;
       };
 
-      let scraperPromise: Promise<ScrapedQualityOption[]>;
+      const scraperPromises: Promise<ScrapedQualityOption[]>[] = [];
 
       if (initialIsBollywood) {
-        const domain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies;
-        addLog(`Executing RogMovies (Bollywood) search on ${domain}...`);
-        scraperPromise = getRogMoviesQualityOptions(
-          cleanQ,
-          initialYear,
-          initialImdbId,
-          initialMediaType,
-          domain,
-          'ROGMOVIES',
-          createController(),
-          (msg) => addLog(msg)
-        );
+        const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies;
+        const topDomain = liveDomains.topmovies || 'https://moviesleech.asia';
+
+        if (!disabledList.includes('rogmovies')) {
+          addLog(`Executing RogMovies (Bollywood) search on ${rogDomain}...`);
+          scraperPromises.push(
+            getRogMoviesQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              rogDomain,
+              'ROGMOVIES',
+              createController(),
+              (msg) => addLog(msg)
+            )
+          );
+        }
+
+        if (!disabledList.includes('topmovies')) {
+          addLog(`Executing TopMovies (Bollywood) search on ${topDomain}...`);
+          scraperPromises.push(
+            getTopMoviesQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              topDomain,
+              'TOPMOVIES',
+              createController(),
+              (msg) => addLog(msg)
+            )
+          );
+        }
       } else {
-        const domain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
-        addLog(`Executing VegaMovies (Hollywood) search on ${domain}...`);
-        scraperPromise = getVegaMoviesQualityOptions(
-          cleanQ,
-          initialYear,
-          initialImdbId,
-          initialMediaType,
-          domain,
-          'VEGAMOVIES',
-          createController(),
-          (msg) => addLog(msg)
-        );
+        const vegaDomain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
+        const moviesModDomain = liveDomains.moviesmod || 'https://moviesmod.at';
+
+        if (!disabledList.includes('vegamovies')) {
+          addLog(`Executing VegaMovies (Hollywood) search on ${vegaDomain}...`);
+          scraperPromises.push(
+            getVegaMoviesQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              vegaDomain,
+              'VEGAMOVIES',
+              createController(),
+              (msg) => addLog(msg)
+            )
+          );
+        }
+
+        if (!disabledList.includes('moviesmod')) {
+          addLog(`Executing MoviesMod (Hollywood) search on ${moviesModDomain}...`);
+          scraperPromises.push(
+            getMoviesModQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              moviesModDomain,
+              'MOVIESMOD',
+              createController(),
+              (msg) => addLog(msg)
+            )
+          );
+        }
       }
 
-      const [res] = await Promise.allSettled([scraperPromise]);
+      const results = await Promise.allSettled(scraperPromises);
 
       const allExtractedOptions: ScrapedQualityOption[] = [];
-      if (res.status === 'fulfilled') {
-        allExtractedOptions.push(...res.value);
-      }
+      results.forEach((res) => {
+        if (res.status === 'fulfilled') {
+          allExtractedOptions.push(...res.value);
+        }
+      });
 
       const optionMap = new Map<string, ScrapedQualityOption>();
       allExtractedOptions.forEach((o) => optionMap.set(o.targetUrl, o));
@@ -204,6 +306,13 @@ export default function DownloaderScreen({
   const isSeries = options.some((o) => o.contentType !== 'MOVIE');
   const availableSeasons = Array.from(new Set(options.map((o) => o.seasonNumber || 1))).sort((a, b) => a - b);
 
+  // Auto-sync selectedSeason state to first available season if not present
+  useEffect(() => {
+    if (availableSeasons.length > 0 && !availableSeasons.includes(selectedSeason)) {
+      setSelectedSeason(availableSeasons[0]);
+    }
+  }, [options, availableSeasons]);
+
   const filteredOptions = options.filter((opt) => {
     if (opt.qualityLabel !== selectedQuality) return false;
     if (opt.contentType === 'MOVIE') return true;
@@ -211,23 +320,42 @@ export default function DownloaderScreen({
     return opt.contentType === seriesMode;
   });
 
+  // Extract available series providers for current season & quality
+  const availableSeriesProviders = Array.from(
+    new Set(
+      options
+        .filter((opt) => opt.qualityLabel === selectedQuality && opt.contentType === 'SINGLE_EPISODE' && opt.seasonNumber === selectedSeason)
+        .map((opt) => opt.siteKey)
+    )
+  );
+
+  const activeSeriesProvider = (selectedSeriesProvider && availableSeriesProviders.includes(selectedSeriesProvider))
+    ? selectedSeriesProvider
+    : availableSeriesProviders[0] || null;
+
+  const activeSeriesOption = options.find(
+    (opt) => opt.qualityLabel === selectedQuality && opt.contentType === 'SINGLE_EPISODE' && opt.seasonNumber === selectedSeason && opt.siteKey === activeSeriesProvider
+  ) || filteredOptions[0];
+
   // Auto-fetch episodes when series mode is SINGLE_EPISODE
   useEffect(() => {
-    if (isSeries && seriesMode === 'SINGLE_EPISODE' && filteredOptions.length > 0) {
-      const targetOption = filteredOptions[0];
+    if (isSeries && seriesMode === 'SINGLE_EPISODE' && activeSeriesOption) {
       setEpisodesLoading(true);
-      addLog(`Fetching episode list for Season ${selectedSeason} (${selectedQuality})...`);
+      addLog(`Fetching episode list for Season ${selectedSeason} (${selectedQuality}) via ${activeSeriesOption.siteDisplayName}...`);
 
-      const epFetcher = targetOption.siteKey === 'rogmovies' ? fetchRogMoviesEpisodes : fetchVegaMoviesEpisodes;
+      let epFetcher = fetchVegaMoviesEpisodes;
+      if (activeSeriesOption.siteKey === 'rogmovies') epFetcher = fetchRogMoviesEpisodes;
+      else if (activeSeriesOption.siteKey === 'moviesmod') epFetcher = fetchMoviesModEpisodes;
+      else if (activeSeriesOption.siteKey === 'topmovies') epFetcher = fetchTopMoviesEpisodes;
 
-      epFetcher(targetOption.targetUrl)
+      epFetcher(activeSeriesOption.targetUrl)
         .then((epList) => {
           setEpisodesList(epList);
           addLog(`Extracted ${epList.length} episodes`);
         })
         .finally(() => setEpisodesLoading(false));
     }
-  }, [isSeries, seriesMode, selectedSeason, selectedQuality, options]);
+  }, [isSeries, seriesMode, selectedSeason, selectedQuality, activeSeriesOption?.targetUrl]);
 
   const handleDownload = async (item: ScrapedQualityOption, action: 'download' | 'copy', customUrl?: string) => {
     triggerSelectionHaptic();
@@ -253,9 +381,8 @@ export default function DownloaderScreen({
     };
 
     if (item.siteKey === 'rogmovies') res = await resolveRogMoviesLocker(targetUrl, item.qualityLabel);
+    else if (item.siteKey === 'topmovies') res = await resolveTopMoviesLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'vegamovies') res = await resolveVegaMoviesLocker(targetUrl, item.qualityLabel);
-    else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
-    else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
 
@@ -332,7 +459,7 @@ export default function DownloaderScreen({
       {/* ── SERIES MODE TOGGLE (only if series) ── */}
       {isSeries && (
         <View style={styles.seriesRow}>
-          {availableSeasons.length > 1 && availableSeasons.map((sn) => (
+          {availableSeasons.length > 0 && availableSeasons.map((sn) => (
             <TouchableOpacity
               key={`s${sn}`}
               style={[styles.modePill, selectedSeason === sn && styles.modePillActive]}
@@ -368,11 +495,44 @@ export default function DownloaderScreen({
         {/* Web Series 3-Column Episode Grid */}
         {isSeries && seriesMode === 'SINGLE_EPISODE' && (
           <View style={styles.episodeSection}>
-            <Text style={styles.sectionLabel}>
-              SEASON {selectedSeason} EPISODES  ·  {selectedQuality.toUpperCase()}
-            </Text>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionLabel}>
+                SEASON {selectedSeason} EPISODES  ·  {selectedQuality.toUpperCase()}
+                {activeSeriesOption ? `  ·  ${activeSeriesOption.siteDisplayName}` : ''}
+              </Text>
+            </View>
+
+            {/* Provider Switcher Pills if > 1 provider offers series links */}
+            {availableSeriesProviders.length > 1 && (
+              <View style={styles.providerSwitcherRow}>
+                {availableSeriesProviders.map((sk) => {
+                  const provOpt = options.find((o) => o.siteKey === sk);
+                  const pColor = getProviderColor(sk);
+                  const isActive = activeSeriesProvider === sk;
+                  return (
+                    <TouchableOpacity
+                      key={`prov-pill-${sk}`}
+                      style={[
+                        styles.provPill,
+                        { borderColor: pColor },
+                        isActive && { backgroundColor: pColor },
+                      ]}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setSelectedSeriesProvider(sk);
+                      }}
+                    >
+                      <Text style={[styles.provPillText, isActive ? { color: '#0A0A0C' } : { color: pColor }]}>
+                        ⚡ {provOpt?.siteDisplayName || sk.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
             {episodesLoading ? (
-              <ActivityIndicator size="small" color="#FFE500" style={{ marginVertical: 20 }} />
+              <ActivityIndicator size="small" color={getProviderColor(activeSeriesProvider || 'vegamovies')} style={{ marginVertical: 20 }} />
             ) : episodesList.length === 0 ? (
               <Text style={styles.emptySubText}>No episodes found for this season</Text>
             ) : (
@@ -380,14 +540,16 @@ export default function DownloaderScreen({
                 {episodesList.map((ep) => (
                   <TouchableOpacity
                     key={`ep-${ep.episodeNumber}`}
-                    style={styles.epButton}
+                    style={[styles.epButton, { borderColor: `${getProviderColor(activeSeriesProvider || 'vegamovies')}40` }]}
                     onPress={() => {
-                      if (filteredOptions.length > 0) {
-                        handleDownload(filteredOptions[0], 'download', ep.targetUrl);
+                      if (activeSeriesOption) {
+                        handleDownload(activeSeriesOption, 'download', ep.targetUrl);
                       }
                     }}
                   >
-                    <Text style={styles.epBtnText}>EP {ep.episodeNumber < 10 ? `0${ep.episodeNumber}` : ep.episodeNumber}</Text>
+                    <Text style={[styles.epBtnText, { color: getProviderColor(activeSeriesProvider || 'vegamovies') }]}>
+                      EP {ep.episodeNumber < 10 ? `0${ep.episodeNumber}` : ep.episodeNumber}
+                    </Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -404,44 +566,101 @@ export default function DownloaderScreen({
               <Text style={styles.emptySubText}>Try a different quality tier above</Text>
             </View>
           ) : (
-            filteredOptions.map((item) => {
-              const isResolving = resolvingId === item.id;
-              return (
-                <View key={item.id} style={styles.providerCard}>
-                  {/* Top Row: provider name + file size */}
-                  <View style={styles.cardTopRow}>
-                    <Text style={styles.providerName}>⚡ {item.siteDisplayName}</Text>
-                    <Text style={styles.fileSize}>{item.fileSize}</Text>
-                  </View>
+            (() => {
+              const groupedMap: Record<string, ScrapedQualityOption[]> = {};
+              filteredOptions.forEach((opt) => {
+                if (!groupedMap[opt.siteKey]) groupedMap[opt.siteKey] = [];
+                groupedMap[opt.siteKey].push(opt);
+              });
 
-                  {/* Metadata: dot-separated single line */}
-                  <Text style={styles.metaLine}>
-                    {[item.ripFormat, item.codec, item.audioTracks].filter(Boolean).join('  ·  ')}
-                  </Text>
+              return Object.entries(groupedMap).map(([siteKey, groupItems]) => {
+                const pColor = getProviderColor(siteKey);
+                const displayName = groupItems[0]?.siteDisplayName || siteKey.toUpperCase();
+                const isCollapsible = groupItems.length > 3;
+                const isCollapsed = isCollapsible && (collapsedProviders[siteKey] !== false);
 
-                  {/* Action Buttons */}
-                  <View style={styles.actionRow}>
+                return (
+                  <View key={`group-${siteKey}`} style={styles.providerGroupWrap}>
+                    {/* Group Header Bar */}
                     <TouchableOpacity
-                      style={styles.dlBtn}
-                      onPress={() => handleDownload(item, 'download')}
-                      disabled={isResolving}
+                      style={[styles.groupHeader, { borderLeftColor: pColor }]}
+                      onPress={() => {
+                        if (isCollapsible) {
+                          triggerSelectionHaptic();
+                          setCollapsedProviders((prev) => ({ ...prev, [siteKey]: !prev[siteKey] }));
+                        }
+                      }}
+                      activeOpacity={isCollapsible ? 0.7 : 1.0}
                     >
-                      {isResolving
-                        ? <ActivityIndicator size="small" color="#0A0A0C" />
-                        : <Text style={styles.dlBtnText}>📥  DOWNLOAD</Text>
-                      }
+                      <View style={styles.groupHeaderLeft}>
+                        <View style={[styles.providerDot, { backgroundColor: pColor }]} />
+                        <Text style={[styles.groupTitle, { color: pColor }]}>
+                          {displayName}
+                        </Text>
+                        <View style={[styles.countBadge, { backgroundColor: `${pColor}20`, borderColor: `${pColor}50` }]}>
+                          <Text style={[styles.countBadgeText, { color: pColor }]}>
+                            {groupItems.length} {groupItems.length === 1 ? 'OPTION' : 'OPTIONS'}
+                          </Text>
+                        </View>
+                      </View>
+                      {isCollapsible && (
+                        <View style={styles.groupHeaderRight}>
+                          <Text style={[styles.collapseHintText, { color: pColor }]}>
+                            {isCollapsed ? 'EXPAND' : 'COLLAPSE'}
+                          </Text>
+                          <Ionicons
+                            name={isCollapsed ? 'chevron-down' : 'chevron-up'}
+                            size={14}
+                            color={pColor}
+                          />
+                        </View>
+                      )}
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.copyBtn}
-                      onPress={() => handleDownload(item, 'copy')}
-                      disabled={isResolving}
-                    >
-                      <Text style={styles.copyBtnText}>🔗  COPY LINK</Text>
-                    </TouchableOpacity>
+
+                    {/* Cards (rendered if not collapsed) */}
+                    {!isCollapsed && groupItems.map((item) => {
+                      const isResolving = resolvingId === item.id;
+                      return (
+                        <View key={item.id} style={[styles.providerCard, { borderLeftColor: pColor }]}>
+                          {/* Top Row: provider name + file size */}
+                          <View style={styles.cardTopRow}>
+                            <Text style={styles.providerName}>⚡ {item.siteDisplayName}</Text>
+                            <Text style={[styles.fileSize, { color: pColor }]}>{item.fileSize}</Text>
+                          </View>
+
+                          {/* Metadata: dot-separated single line */}
+                          <Text style={styles.metaLine}>
+                            {[item.ripFormat, item.codec, item.audioTracks].filter(Boolean).join('  ·  ')}
+                          </Text>
+
+                          {/* Action Buttons */}
+                          <View style={styles.actionRow}>
+                            <TouchableOpacity
+                              style={[styles.dlBtn, { backgroundColor: pColor }]}
+                              onPress={() => handleDownload(item, 'download')}
+                              disabled={isResolving}
+                            >
+                              {isResolving ? (
+                                <ActivityIndicator size="small" color="#0A0A0C" />
+                              ) : (
+                                <Text style={styles.dlBtnText}>📥  DOWNLOAD</Text>
+                              )}
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.copyBtn, { borderColor: `${pColor}50` }]}
+                              onPress={() => handleDownload(item, 'copy')}
+                              disabled={isResolving}
+                            >
+                              <Text style={[styles.copyBtnText, { color: pColor }]}>🔗  COPY LINK</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
                   </View>
-                </View>
-              );
-            })
+                );
+              });
+            })()
           )
         )}
 
@@ -624,6 +843,26 @@ const styles = StyleSheet.create({
   episodeSection: {
     marginBottom: 20,
   },
+  sectionHeaderRow: {
+    marginBottom: 10,
+  },
+  providerSwitcherRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  provPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  provPillText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 10,
+    fontWeight: '600',
+  },
   epGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -635,13 +874,61 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
     backgroundColor: 'rgba(255,255,255,0.03)',
   },
   epBtnText: {
     fontFamily: 'NType82Mono',
     fontSize: 10,
-    color: '#FFE500',
+  },
+
+  // Provider Groups & Accordions
+  providerGroupWrap: {
+    marginBottom: 16,
+  },
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderLeftWidth: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  groupHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  providerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  groupTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 13,
+    letterSpacing: 1,
+  },
+  countBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 1,
+  },
+  countBadgeText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 8,
+    fontWeight: '600',
+  },
+  groupHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  collapseHintText: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    letterSpacing: 0.5,
   },
 
   // Scroll
@@ -651,6 +938,7 @@ const styles = StyleSheet.create({
   // Provider cards
   providerCard: {
     borderWidth: 1,
+    borderLeftWidth: 3,
     borderColor: 'rgba(255,255,255,0.08)',
     backgroundColor: 'rgba(255,255,255,0.02)',
     padding: 14,

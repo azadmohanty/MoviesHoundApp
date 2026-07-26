@@ -282,6 +282,10 @@ export const resolveFzMoviesStream = async (
   imdbId?: string,
   mediaType: 'movie' | 'tv' | 'anime' = 'movie'
 ): Promise<FzMoviesStreamResult | null> => {
+  // Web Series Guard: FzMovies stores movies ONLY, return null for TV series
+  if (mediaType === 'tv' || mediaType === 'anime') {
+    return null;
+  }
   const resolver = new FzMoviesResolver();
   return resolver.resolveMovieStream(title, year, imdbId, mediaType);
 };

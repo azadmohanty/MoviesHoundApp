@@ -1,8 +1,9 @@
-import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
+import { ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
 import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
+import { bypassUnblocked } from './moviesmodResolver';
 
-const DEFAULT_ROG_DOMAIN = 'https://rogmovies.rest';
+const DEFAULT_TOPMOVIES_DOMAIN = 'https://moviesleech.asia';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 export interface SeriesEpisodeItem {
@@ -12,20 +13,34 @@ export interface SeriesEpisodeItem {
 }
 
 /**
- * 100% Empirical DOM Parser for RogMovies main article page.
- * Identical structure to VegaMovies, tailored for Indian/Bollywood content.
+ * Base64 helper for decoding url= parameters on TopMovies buttons
  */
-export function parseRogMoviesArticle(
+function base64Decode(str: string): string {
+  try {
+    if (typeof atob === 'function') {
+      return atob(str);
+    }
+    return Buffer.from(str, 'base64').toString('utf-8');
+  } catch (e) {
+    return str;
+  }
+}
+
+/**
+ * 100% Empirical DOM Parser for TopMovies main article page.
+ * Inherits MoviesMod DOM structure, tailored for Bollywood content.
+ */
+export function parseTopMoviesArticle(
   html: string,
   articleUrl: string,
-  siteDisplayName: string = 'ROGMOVIES'
+  siteDisplayName: string = 'TOPMOVIES'
 ): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
 
   const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
 
-  const headerRegex = /<h[35][^>]*>([\s\S]*?)<\/h[35]>([\s\S]*?)(?=<h[1-5]|$)/gi;
+  const headerRegex = /<h[2-5][^>]*>([\s\S]*?)<\/h[2-5]>([\s\S]*?)(?=<h[1-5]|$)/gi;
   const matches = [...html.matchAll(headerRegex)];
 
   matches.forEach((match) => {
@@ -44,20 +59,25 @@ export function parseRogMoviesArticle(
     const ripFormat = extractRipFormat(fullTagContext);
     const audioTracks = extractAudioTracks(fullTagContext);
 
-    const sizeMatch = headerText.match(/\[([\d.]+\s*(?:GB|MB)(?:\/E)?)]/i);
-    const fileSize = sizeMatch ? sizeMatch[1] : 'N/A';
+    const baseSizeMatch = headerText.match(/\[([\d.]+\s*(?:GB|MB)(?:\/E)?)]/i);
+    const baseFileSize = baseSizeMatch ? baseSizeMatch[1] : 'N/A';
 
     const baseSeasonMatch = headerText.match(/\b(?:Season|S)\s*0*(\d+)\b/i) ||
                             mainTitle.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
     const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(headerText) || /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle);
 
-    const links = [...sectionHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-g-drive|maxbutton-af-download|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const links = [...sectionHtml.matchAll(buttonRegex)];
 
     links.forEach((l) => {
-      const href = l[1];
+      let rawHref = l[1];
       const linkText = l[2].replace(/<[^>]+>/g, '').trim();
 
-      if (!href.includes('nexdrive') && !href.includes('vcloud') && !href.includes('fastdl') && !href.includes('gdflix') && !href.includes('dwd-button')) return;
+      let targetUrl = rawHref;
+      if (rawHref.includes('url=')) {
+        const b64 = rawHref.split('url=')[1].split('&')[0];
+        targetUrl = base64Decode(b64);
+      }
 
       const linkSeasonMatch = linkText.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
       const seasonMatch = linkSeasonMatch || baseSeasonMatch;
@@ -74,12 +94,12 @@ export function parseRogMoviesArticle(
       }
 
       const linkSizeMatch = linkText.match(/\[([\d.]+\s*(?:GB|MB))]/i);
-      const optionFileSize = linkSizeMatch ? linkSizeMatch[1] : fileSize;
+      const optionFileSize = linkSizeMatch ? linkSizeMatch[1] : baseFileSize;
 
       options.push({
-        id: `rog-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-        siteKey: 'rogmovies',
-        siteDisplayName: siteDisplayName,
+        id: `top-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        siteKey: 'topmovies',
+        siteDisplayName,
         qualityLabel,
         ripFormat,
         codec,
@@ -88,7 +108,7 @@ export function parseRogMoviesArticle(
         contentType,
         episodeName: isEpisode ? linkText : undefined,
         seasonNumber,
-        targetUrl: href,
+        targetUrl,
         priorityScore: 1,
       });
     });
@@ -98,51 +118,64 @@ export function parseRogMoviesArticle(
 }
 
 /**
- * Automated Search & Verification Pipeline for RogMovies (Indian/Bollywood Content).
+ * Automated Multi-Page Search & Smart Verification Pipeline for TopMovies.
  */
-export async function getRogMoviesQualityOptions(
+export async function getTopMoviesQualityOptions(
   queryTitle: string,
   targetYear?: string | number,
   targetImdbId?: string,
   mediaType: string = 'movie',
-  baseDomain: string = DEFAULT_ROG_DOMAIN,
-  siteDisplayName: string = 'ROGMOVIES',
+  baseDomain: string = DEFAULT_TOPMOVIES_DOMAIN,
+  siteDisplayName: string = 'TOPMOVIES',
   signal?: AbortSignal,
   onLog?: (msg: string) => void
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = sanitizeSearchQuery(queryTitle);
-  const domain = baseDomain || DEFAULT_ROG_DOMAIN;
-  const searchUrl = `${domain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
+  const searchUrl = `${baseDomain}/search/${encodeURIComponent(searchQuery)}/page/1`;
 
-  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${domain}...`);
+  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
 
-  let hits: any[] = [];
+  let articles: { title: string; url: string; poster?: string }[] = [];
   try {
     const res = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA } });
-    const text = await res.text();
-    const json = JSON.parse(text);
-    hits = json.hits || [];
+    const html = await res.text();
+
+    const articleRegex = /<article[\s\S]*?>([\s\S]*?)<\/article>/gi;
+    let match;
+    while ((match = articleRegex.exec(html)) !== null) {
+      const content = match[1];
+      const titleMatch = /title="([^"]+)"/i.exec(content);
+      const hrefMatch = /href="([^"]+)"/i.exec(content);
+      const imgMatch = /(?:data-src|src)="([^"]+)"/i.exec(content);
+
+      if (titleMatch && hrefMatch) {
+        articles.push({
+          title: titleMatch[1].replace(/^Download\s+/i, '').trim(),
+          url: hrefMatch[1],
+          poster: imgMatch ? imgMatch[1] : undefined,
+        });
+      }
+    }
   } catch (e: any) {
     if (onLog) onLog(`${siteDisplayName} search error: ${e.message}`);
     return [];
   }
 
-  if (hits.length === 0) {
+  if (articles.length === 0) {
     if (onLog) onLog(`${siteDisplayName}: 0 search hits returned`);
     return [];
   }
 
-  if (onLog) onLog(`${siteDisplayName}: ${hits.length} raw search hits found. Pre-filtering...`);
+  if (onLog) onLog(`${siteDisplayName}: ${articles.length} raw search hits found. Pre-filtering...`);
 
   const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
   const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
 
-  let candidateHits = hits.filter((hit: any) => {
-    const postTitle = hit.document?.post_title || '';
-    const score = calculateMatchConfidence(queryTitle, postTitle, targetYear);
+  let candidateHits = articles.filter((art) => {
+    const score = calculateMatchConfidence(queryTitle, art.title, targetYear);
     if (score < 50) return false;
 
-    const isTvPost = /season|s0\d|series|episodes|complete/i.test(postTitle);
+    const isTvPost = /season|s0\d|s\d|series|episodes|complete/i.test(art.title);
     if (isTvTarget && !isTvPost) return false;
     if (!isTvTarget && isTvPost) return false;
 
@@ -150,25 +183,19 @@ export async function getRogMoviesQualityOptions(
   });
 
   if (numTargetYear && candidateHits.length > 0) {
-    const exactYearHits = candidateHits.filter((hit: any) => {
-      const postTitle = hit.document?.post_title || '';
-      const postYearMatch = postTitle.match(/\b(19\d\d|20\d\d)\b/);
-      if (postYearMatch) {
-        return parseInt(postYearMatch[1], 10) === numTargetYear;
-      }
-      return false;
+    const exactYearHits = candidateHits.filter((art) => {
+      const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
+      return postYearMatch ? parseInt(postYearMatch[1], 10) === numTargetYear : false;
     });
 
     if (exactYearHits.length > 0) {
-      if (onLog) onLog(`${siteDisplayName}: Exact year match (${numTargetYear}) found!`);
+      if (onLog) onLog(`${siteDisplayName}: Exact year match (${numTargetYear}) found! Using exact hits.`);
       candidateHits = exactYearHits;
     } else {
-      candidateHits = candidateHits.filter((hit: any) => {
-        const postTitle = hit.document?.post_title || '';
-        const postYearMatch = postTitle.match(/\b(19\d\d|20\d\d)\b/);
+      candidateHits = candidateHits.filter((art) => {
+        const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
         if (postYearMatch) {
-          const postYear = parseInt(postYearMatch[1], 10);
-          return Math.abs(postYear - numTargetYear) <= 1;
+          return Math.abs(parseInt(postYearMatch[1], 10) - numTargetYear) <= 1;
         }
         return true;
       });
@@ -176,19 +203,16 @@ export async function getRogMoviesQualityOptions(
   }
 
   if (candidateHits.length === 0) {
-    if (onLog) onLog(`${siteDisplayName}: 0 candidates passed pre-filter`);
+    if (onLog) onLog(`${siteDisplayName}: 0 candidates passed year & media-type filter`);
     return [];
   }
 
   const topHits = candidateHits.slice(0, 3);
-  if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified pages...`);
+  if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified candidate pages...`);
 
-  const pagePromises = topHits.map(async (hit: any) => {
-    let permalink = hit.document?.permalink || '';
-    if (permalink.startsWith('/')) permalink = domain + permalink;
-
+  const pagePromises = topHits.map(async (art) => {
     try {
-      const res = await fetch(permalink, { signal, headers: { 'User-Agent': UA } });
+      const res = await fetch(art.url, { signal, headers: { 'User-Agent': UA } });
       const html = await res.text();
 
       if (targetImdbId) {
@@ -206,7 +230,7 @@ export async function getRogMoviesQualityOptions(
         }
       }
 
-      return parseRogMoviesArticle(html, permalink, siteDisplayName);
+      return parseTopMoviesArticle(html, art.url, siteDisplayName);
     } catch (e: any) {
       return [];
     }
@@ -225,24 +249,23 @@ export async function getRogMoviesQualityOptions(
   allOptions.forEach((o) => optionMap.set(o.targetUrl, o));
 
   const uniqueOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
-  if (onLog) onLog(`${siteDisplayName}: 🎉 ${uniqueOptions.length} quality options extracted!`);
+  if (onLog) onLog(`${siteDisplayName}: 🎉 ${uniqueOptions.length} quality options extracted across matching pages!`);
 
   return uniqueOptions;
 }
 
 /**
- * Fetches episode list for RogMovies series.
+ * Fetches individual episode items for a Web Series from TopMovies episode locker page.
  */
-export async function fetchRogMoviesEpisodes(
-  nexdriveUrl: string,
+export async function fetchTopMoviesEpisodes(
+  lockerUrl: string,
   signal?: AbortSignal
 ): Promise<SeriesEpisodeItem[]> {
   try {
-    const res = await fetch(nexdriveUrl, {
+    const res = await fetch(lockerUrl, {
       signal,
       headers: {
         'User-Agent': UA,
-        'Referer': DEFAULT_ROG_DOMAIN + '/',
       },
     });
     const html = await res.text();
@@ -254,12 +277,16 @@ export async function fetchRogMoviesEpisodes(
       const href = l[1];
       const text = l[2].replace(/<[^>]+>/g, '').trim();
 
-      if (!href.startsWith('http')) return;
+      if (
+        href.includes('unblocked') ||
+        href.includes('gdrive') ||
+        href.includes('driveseed') ||
+        href.includes('driveleech') ||
+        href.includes('fastdl')
+      ) {
+        const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
+        const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
 
-      const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
-      const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
-
-      if (text.includes('Episode') || text.includes('Ep') || href.includes('vcloud') || href.includes('gofile') || href.includes('megaup')) {
         episodes.push({
           episodeNumber: epNum,
           episodeTitle: text || `Episode ${epNum}`,
@@ -276,52 +303,50 @@ export async function fetchRogMoviesEpisodes(
 }
 
 /**
- * Resolves Pass 2 RogMovies locker URL.
+ * Resolves Pass 2 TopMovies deep locker URL to direct stream download link.
  */
-export async function resolveRogMoviesLocker(
+export async function resolveTopMoviesLocker(
   targetUrl: string,
   qualityLabel: string = '720p',
-  baseDomain: string = DEFAULT_ROG_DOMAIN
+  signal?: AbortSignal
 ): Promise<ResolvedStreamResult> {
   try {
-    const domain = baseDomain || DEFAULT_ROG_DOMAIN;
-    const res = await fetch(targetUrl, {
-      headers: { 'User-Agent': UA, 'Referer': domain + '/' },
-    });
-    const html = await res.text();
+    let currentUrl = targetUrl;
 
-    const vcloudMatch = html.match(/href="([^"]*vcloud[^"]*)"/i);
-    if (vcloudMatch) {
-      const vcloudUrl = vcloudMatch[1];
-      const vres = await fetch(vcloudUrl, { headers: { 'User-Agent': UA } });
-      const vhtml = await vres.text();
-
-      const atobMatch = vhtml.match(/atob\(atob\('([^']+)'\)\)/i) || vhtml.match(/atob\('([^']+)'\)/i);
-      if (atobMatch) {
-        let token = atobMatch[1];
-        try {
-          let decoded = atob(token);
-          if (!decoded.includes('http')) {
-            decoded = atob(decoded);
-          }
-          if (decoded.includes('http')) {
-            return {
-              success: true,
-              streamUrl: decoded,
-              providerName: 'ROGMOVIES [V-CLOUD]',
-              qualityLabel,
-            };
-          }
-        } catch (e) {}
+    if (currentUrl.includes('unblocked')) {
+      const bypassed = await bypassUnblocked(currentUrl, signal);
+      if (bypassed && bypassed.startsWith('http')) {
+        return {
+          success: true,
+          streamUrl: bypassed,
+          providerName: 'TOPMOVIES [DRIVESEED]',
+          qualityLabel,
+        };
       }
     }
 
-    const driveMatch = html.match(/href="([^"]*(?:gdrive|gdflix|drive|direct)[^"]*)"/i);
-    if (driveMatch) {
+    const res = await fetch(currentUrl, {
+      signal,
+      headers: { 'User-Agent': UA },
+    });
+    const html = await res.text();
+
+    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    const candidateLink = links.find((l) => {
+      const href = l[1];
+      return href.includes('unblocked') || href.includes('driveseed') || href.includes('driveleech') || href.includes('gdrive') || href.includes('fastdl');
+    });
+
+    if (candidateLink) {
+      let candidateUrl = candidateLink[1];
+      if (candidateUrl.includes('unblocked')) {
+        candidateUrl = await bypassUnblocked(candidateUrl, signal);
+      }
+
       return {
         success: true,
-        streamUrl: driveMatch[1],
-        providerName: 'ROGMOVIES [G-DRIVE FAILOVER]',
+        streamUrl: candidateUrl,
+        providerName: 'TOPMOVIES [STREAM]',
         qualityLabel,
       };
     }
@@ -329,15 +354,15 @@ export async function resolveRogMoviesLocker(
     return {
       success: true,
       streamUrl: targetUrl,
-      providerName: 'ROGMOVIES DIRECT',
+      providerName: 'TOPMOVIES DIRECT',
       qualityLabel,
     };
   } catch (err: any) {
     return {
       success: false,
-      providerName: 'ROGMOVIES',
+      providerName: 'TOPMOVIES',
       qualityLabel,
-      message: `RogMovies resolution error: ${err.message}`,
+      message: `TopMovies resolution error: ${err.message}`,
     };
   }
 }

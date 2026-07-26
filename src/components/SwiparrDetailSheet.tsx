@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Image } from 'expo-image';
 import {
   Modal,
   View,
@@ -7,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Image,
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';

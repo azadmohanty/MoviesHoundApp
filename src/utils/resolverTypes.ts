@@ -3,14 +3,14 @@ export interface SearchArticleCard {
   title: string;
   permalink: string;
   posterUrl?: string;
-  siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'bollyflix' | 'fzmovies' | 'moviebox';
+  siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'topmovies' | 'bollyflix' | 'fzmovies' | 'moviebox';
   siteDisplayName: string;
   confidenceScore: number;
 }
 
 export interface ScrapedQualityOption {
   id: string;
-  siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'bollyflix' | 'fzmovies' | 'moviebox';
+  siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'topmovies' | 'bollyflix' | 'fzmovies' | 'moviebox';
   siteDisplayName: string;
   qualityLabel: '480p' | '720p' | '1080p' | '4K';
   ripFormat: string;       // e.g. "WEBRip", "WEB-DL", "BluRay IMAX"

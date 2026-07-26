@@ -1,9 +1,32 @@
+import { Buffer } from 'buffer';
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
-import { calculateMatchConfidence } from './FuzzyMatcher';
+import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
 import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
 
 const BASE_DOMAIN = 'https://vegamovies.navy';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+/**
+ * Safe base64 decode that works on both Node.js (Buffer) and React Native Hermes (no atob).
+ * Tries double-decode first (atob(atob(x)) pattern used by VCloud), then single decode.
+ */
+function b64decode(str: string): string {
+  try {
+    // React Native / Hermes — Buffer is available via the 'buffer' polyfill
+    // @ts-ignore
+    const decoded1 = Buffer.from(str, 'base64').toString('utf-8');
+    // Try double decode (VCloud uses atob(atob(x)))
+    try {
+      // @ts-ignore
+      const decoded2 = Buffer.from(decoded1, 'base64').toString('utf-8');
+      if (decoded2.startsWith('http')) return decoded2;
+    } catch (_) {}
+    return decoded1;
+  } catch (e) {
+    // Absolute last resort: try global atob if available (browser/web)
+    try { return (globalThis as any).atob?.(str) ?? str; } catch (_) { return str; }
+  }
+}
 
 export interface SeriesEpisodeItem {
   episodeNumber: number;
@@ -43,9 +66,9 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
     const sizeMatch = headerText.match(/\[([\d.]+\s*(?:GB|MB)(?:\/E)?)]/i);
     const fileSize = sizeMatch ? sizeMatch[1] : 'N/A';
 
-    const seasonMatch = headerText.match(/Season\s*(\d+)/i) || mainTitle.match(/Season\s*(\d+)/i);
-    const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
-    const isSeriesArticle = /season|s0\d|episodes|series/i.test(headerText) || /season|s0\d|episodes|series/i.test(mainTitle);
+    const baseSeasonMatch = headerText.match(/\b(?:Season|S)\s*0*(\d+)\b/i) ||
+                            mainTitle.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
+    const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(headerText) || /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle);
 
     const links = [...sectionHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
@@ -55,8 +78,12 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
 
       if (!href.includes('nexdrive') && !href.includes('vcloud') && !href.includes('fastdl') && !href.includes('gdflix') && !href.includes('dwd-button')) return;
 
-      const isBatch = /batch|zip/i.test(linkText);
-      const isEpisode = /episode|ep\s*\d+|e\d{2}|v-cloud|g-direct|instant|resumable|single/i.test(linkText);
+      const linkSeasonMatch = linkText.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
+      const seasonMatch = linkSeasonMatch || baseSeasonMatch;
+      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
+
+      const isBatch = /\b(?:batch|zip)\b/i.test(linkText);
+      const isEpisode = /\b(?:episode|ep\s*\d+|e\d{2}|single)\b/i.test(linkText);
       
       let contentType: 'MOVIE' | 'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP' = 'MOVIE';
       if (isBatch) {
@@ -65,24 +92,37 @@ export function parseVegaMoviesArticle(html: string, articleUrl: string): Scrape
         contentType = 'SINGLE_EPISODE';
       }
 
+      const linkSizeMatch = linkText.match(/\[([\d.]+\s*(?:GB|MB))]/i);
+      const optionFileSize = linkSizeMatch ? linkSizeMatch[1] : fileSize;
+
+      let priorityScore = 5;
+      if (isBatch) {
+        priorityScore = 90; // Demote Zip/Batch packs below single episode links!
+      } else if (/v-cloud|vcloud/i.test(linkText) || /vcloud/i.test(href)) {
+        priorityScore = 1; // Highest priority for single episode V-Cloud links!
+      } else if (/g-direct|fastdl/i.test(linkText) || /fastdl/i.test(href)) {
+        priorityScore = 3;
+      }
+
       options.push({
-        id: `vega-${options.length}`,
+        id: `vega-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
         siteKey: 'vegamovies',
         siteDisplayName: 'VEGAMOVIES',
         qualityLabel,
         ripFormat,
         codec,
-        fileSize,
+        fileSize: optionFileSize,
         audioTracks,
         contentType,
-        episodeName: isEpisode ? linkText : undefined,
+        episodeName: linkText,
         seasonNumber,
         targetUrl: href,
-        priorityScore: 1,
+        priorityScore,
       });
     });
   });
 
+  options.sort((a, b) => (a.priorityScore || 5) - (b.priorityScore || 5));
   return options;
 }
 
@@ -100,7 +140,7 @@ export async function getVegaMoviesQualityOptions(
   signal?: AbortSignal,
   onLog?: (msg: string) => void
 ): Promise<ScrapedQualityOption[]> {
-  const searchQuery = `${queryTitle} ${targetYear || ''}`.trim();
+  const searchQuery = sanitizeSearchQuery(queryTitle);
   const searchUrl = `${baseDomain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
 
   if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
@@ -242,32 +282,100 @@ export async function fetchVegaMoviesEpisodes(
 
     const episodes: SeriesEpisodeItem[] = [];
 
-    // Extract all episode links (Episode 01, Episode 02, etc. or VCloud episode anchors)
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    // Split HTML by episode section headers (<h4>-:Episodes: 1:-</h4> or <h3>/<h4> Episode X)
+    const sections = html.split(/(?=<h[345][^>]*>|(?:\b(?:Episodes?|Ep|E)\b\s*:?\s*\d+))/i);
 
-    links.forEach((l) => {
-      const href = l[1];
-      const text = l[2].replace(/<[^>]+>/g, '').trim();
+    sections.forEach((sec) => {
+      const epMatch = sec.match(/(?:Episodes?|Ep|E)\s*:?\s*0*(\d+)/i);
+      const epNum = epMatch ? parseInt(epMatch[1], 10) : null;
 
-      if (!href.startsWith('http')) return;
+      if (!epNum) return;
 
-      const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
-      const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
+      const links = [...sec.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
-      if (text.includes('Episode') || text.includes('Ep') || href.includes('vcloud') || href.includes('gofile') || href.includes('megaup')) {
-        episodes.push({
-          episodeNumber: epNum,
-          episodeTitle: text || `Episode ${epNum}`,
-          targetUrl: href,
-        });
+      let vcloudLink: string | null = null;
+      let fallbackLink: string | null = null;
+
+      links.forEach((l) => {
+        const href = l[1];
+        const text = l[2].replace(/<[^>]+>/g, '').trim();
+
+        if (!href.startsWith('http')) return;
+
+        if (href.includes('vcloud') || href.includes('v-cloud')) {
+          vcloudLink = href;
+        } else if (href.includes('fastdl') || href.includes('g-direct') || href.includes('gofile')) {
+          if (!fallbackLink) fallbackLink = href;
+        }
+      });
+
+      const chosenLink = vcloudLink || fallbackLink;
+      if (chosenLink) {
+        if (!episodes.some((e) => e.episodeNumber === epNum)) {
+          episodes.push({
+            episodeNumber: epNum,
+            episodeTitle: `Episode ${epNum}`,
+            targetUrl: chosenLink,
+          });
+        }
       }
     });
 
-    episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
-    return episodes;
+    // Fallback: If section-based parsing yields 0 items, parse flat links
+    if (episodes.length === 0) {
+      const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+      links.forEach((l) => {
+        const href = l[1];
+        const text = l[2].replace(/<[^>]+>/g, '').trim();
+        if (!href.startsWith('http')) return;
+
+        if (href.includes('vcloud') || href.includes('v-cloud')) {
+          const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
+          const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
+          episodes.push({
+            episodeNumber: epNum,
+            episodeTitle: `Episode ${epNum}`,
+            targetUrl: href,
+          });
+        }
+      });
+    }
+
+    return episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
   } catch (e: any) {
     return [];
   }
+}
+
+export function isStreamableVideoUrl(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+
+  // Reject web page URLs
+  if (
+    url.includes('vcloud.zip') ||
+    url.includes('v-cloud') ||
+    url.includes('fastdl.zip') ||
+    url.includes('nexdrive') ||
+    url.includes('embed.php') ||
+    url.includes('hubcloud') ||
+    url.includes('pixeldrain.dev') ||
+    url.includes('filebee.xyz')
+  ) {
+    return false;
+  }
+
+  // Accept direct video streams
+  return (
+    url.includes('.mkv') ||
+    url.includes('.mp4') ||
+    url.includes('.m3u8') ||
+    url.includes('r2.cloudflarestorage.com') ||
+    url.includes('r2.dev') ||
+    url.includes('.webm') ||
+    url.includes('.ts') ||
+    url.includes('hakunaymatata.com')
+  );
 }
 
 /**
@@ -283,49 +391,95 @@ export async function resolveVegaMoviesLocker(
     });
     const html = await res.text();
 
-    // 1. Primary Locker: VCloud Token Decrypter
-    const vcloudMatch = html.match(/href="([^"]*vcloud[^"]*)"/i);
-    if (vcloudMatch) {
-      const vcloudUrl = vcloudMatch[1];
-      const vres = await fetch(vcloudUrl, { headers: { 'User-Agent': UA } });
-      const vhtml = await vres.text();
+    // 1. Primary Locker: Extract and rank locker links (Prioritize V-Cloud over FastDL)
+    const lockerLinks = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    const candidateLockers: Array<{ text: string; href: string; priority: number }> = [];
 
-      const atobMatch = vhtml.match(/atob\(atob\('([^']+)'\)\)/i) || vhtml.match(/atob\('([^']+)'\)/i);
-      if (atobMatch) {
-        let token = atobMatch[1];
+    lockerLinks.forEach((l) => {
+      let href = l[1];
+      const text = l[2].replace(/<[^>]+>/g, '').trim();
+
+      if (href.includes('url=')) {
         try {
-          let decoded = atob(token);
-          if (!decoded.includes('http')) {
-            decoded = atob(decoded);
+          const b64 = href.split('url=')[1].split('&')[0];
+          href = b64decode(b64);
+        } catch (e) {}
+      }
+
+      if (href.includes('vcloud') || href.includes('v-cloud') || href.includes('fastdl') || href.includes('nexdrive')) {
+        let priority = 99;
+        if (/v-cloud|vcloud/i.test(text) || /vcloud/i.test(href)) priority = 1;
+        else if (/g-direct|fastdl/i.test(text) || /fastdl/i.test(href)) priority = 2;
+        else priority = 3;
+
+        candidateLockers.push({ text, href, priority });
+      }
+    });
+
+    candidateLockers.sort((a, b) => a.priority - b.priority);
+
+    // Loop through candidate lockers to extract a true streamable video URL
+    for (const locker of candidateLockers) {
+      try {
+        let vcloudUrl = locker.href;
+        const vres = await fetch(vcloudUrl, { headers: { 'User-Agent': UA } });
+        const vhtml = await vres.text();
+
+        const atobMatch = vhtml.match(/atob\(atob\(['"]([^'"]+)['"]\)\)/i) || vhtml.match(/atob\(['"]([^'"]+)['"]\)/i);
+        let targetServerPage = vcloudUrl;
+
+        if (atobMatch) {
+          const decoded = b64decode(atobMatch[1]);
+          if (decoded && decoded.startsWith('http')) {
+            targetServerPage = decoded;
           }
-          if (decoded.includes('http')) {
+        }
+
+        // Fetch tokenized VCloud server page & extract FSLv2 / FSL / Server 1 direct stream link!
+        const sRes = await fetch(targetServerPage, { headers: { 'User-Agent': UA } });
+        const sHtml = await sRes.text();
+
+        const buttonRegex = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match;
+        const candidates: Array<{ text: string; href: string; priority: number }> = [];
+
+        while ((match = buttonRegex.exec(sHtml)) !== null) {
+          const href = match[1];
+          const text = match[2].replace(/<[^>]+>/g, '').trim();
+
+          if (href && href.startsWith('http')) {
+            let priority = 99;
+            if (/fslv2/i.test(text)) priority = 1;
+            else if (/fsl\b/i.test(text)) priority = 2;
+            else if (/server\s*:?\s*1\b/i.test(text)) priority = 3;
+            else if (/r2\.cloudflarestorage\.com|r2\.dev|\.mkv/i.test(href)) priority = 4;
+
+            if (priority < 99) {
+              candidates.push({ text, href, priority });
+            }
+          }
+        }
+
+        candidates.sort((a, b) => a.priority - b.priority);
+
+        for (const candidate of candidates) {
+          if (isStreamableVideoUrl(candidate.href)) {
             return {
               success: true,
-              streamUrl: decoded,
-              providerName: 'VEGAMOVIES [V-CLOUD]',
+              streamUrl: candidate.href,
+              providerName: `VEGAMOVIES [${candidate.text.toUpperCase()}]`,
               qualityLabel,
             };
           }
-        } catch (e) {}
-      }
-    }
-
-    // 2. Failover Locker: G-Drive / Direct Mirror
-    const driveMatch = html.match(/href="([^"]*(?:gdrive|gdflix|drive|direct)[^"]*)"/i);
-    if (driveMatch) {
-      return {
-        success: true,
-        streamUrl: driveMatch[1],
-        providerName: 'VEGAMOVIES [G-DRIVE FAILOVER]',
-        qualityLabel,
-      };
+        }
+      } catch (e) {}
     }
 
     return {
-      success: true,
-      streamUrl: targetUrl,
-      providerName: 'VEGAMOVIES DIRECT',
+      success: false,
+      providerName: 'VEGAMOVIES',
       qualityLabel,
+      message: 'No direct streamable video link found',
     };
   } catch (err: any) {
     return {
@@ -336,3 +490,172 @@ export async function resolveVegaMoviesLocker(
     };
   }
 }
+
+/**
+ * Dedicated VCloud Token Page Resolver.
+ * Receives a vcloud.zip/... URL, decodes the atob(atob(...)) token, and extracts
+ * the direct Cloudflare R2 .mkv stream URL from the FSLv2 download button.
+ * This is the CORRECT entry point when you already have a VCloud URL.
+ */
+async function resolveVcloudDirectStream(vcloudUrl: string, qualityLabel: string = '480p'): Promise<string | null> {
+  try {
+    // Step 1: Fetch the VCloud token page
+    const vres = await fetch(vcloudUrl, { headers: { 'User-Agent': UA } });
+    const vhtml = await vres.text();
+
+    // Step 2: Decode atob(atob('...')) to get the tokenized server page URL
+    const atobMatch = vhtml.match(/atob\(atob\(['"]([^'"]+)['"]\)\)/i) || vhtml.match(/atob\(['"]([^'"]+)['"]\)/i);
+    let targetServerPage = vcloudUrl;
+
+    if (atobMatch) {
+      const decoded = b64decode(atobMatch[1]);
+      if (decoded && decoded.startsWith('http')) {
+        targetServerPage = decoded;
+      }
+    }
+
+    // Step 3: Fetch the tokenized server page and extract FSLv2 / R2 direct stream button
+    const sRes = await fetch(targetServerPage, { headers: { 'User-Agent': UA } });
+    const sHtml = await sRes.text();
+
+    const buttonRegex = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    const candidates: Array<{ text: string; href: string; priority: number }> = [];
+
+    while ((match = buttonRegex.exec(sHtml)) !== null) {
+      const href = match[1];
+      const text = match[2].replace(/<[^>]+>/g, '').trim();
+
+      if (href && href.startsWith('http')) {
+        let priority = 99;
+        if (/fslv2/i.test(text)) priority = 1;
+        else if (/fsl\b/i.test(text)) priority = 2;
+        else if (/server\s*:?\s*1\b/i.test(text)) priority = 3;
+        else if (/r2\.cloudflarestorage\.com|r2\.dev|\.mkv/i.test(href)) priority = 4;
+
+        if (priority < 99) {
+          candidates.push({ text, href, priority });
+        }
+      }
+    }
+
+    candidates.sort((a, b) => a.priority - b.priority);
+
+    for (const c of candidates) {
+      if (isStreamableVideoUrl(c.href)) {
+        return c.href;
+      }
+    }
+  } catch (e) {
+    console.warn('[VCloud Direct Resolver Error]', e);
+  }
+  return null;
+}
+
+/**
+ * Dedicated Stream Resolver for Server 1 in Video Player Modal.
+ * Resolves VegaMovies 480P/720P/1080P VCloud Cloudflare R2 direct MKV stream URL.
+ */
+export async function resolveVegaMovies480pStream(
+  queryTitle: string,
+  targetYear?: number | string,
+  imdbId?: string,
+  mediaType: string = 'movie',
+  seasonNum: number = 1,
+  episodeNum: number = 1,
+  baseDomain: string = BASE_DOMAIN
+): Promise<{ url: string; qualityLabel: string } | null> {
+  try {
+    console.log(`[VegaMoviesStream] Searching "${queryTitle}" on ${baseDomain} (Season ${seasonNum}, Ep ${episodeNum})...`);
+    const isTv = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
+    const options = await getVegaMoviesQualityOptions(
+      queryTitle,
+      targetYear,
+      imdbId,
+      mediaType,
+      baseDomain,
+      'VEGAMOVIES'
+    );
+
+    console.log(`[VegaMoviesStream] getVegaMoviesQualityOptions returned ${options?.length || 0} options`);
+    if (!options || options.length === 0) return null;
+
+    // Filter out Batch/Zip packs
+    const candidateLockers = options.filter(
+      (o) =>
+        o.contentType !== 'SEASON_BATCH_ZIP' &&
+        !/\b(?:batch|zip|pack)\b/i.test(o.targetUrl) &&
+        !/\b(?:batch|zip|pack)\b/i.test(o.episodeName || '')
+    );
+
+    const pool = candidateLockers.length > 0 ? candidateLockers : options;
+    console.log(`[VegaMoviesStream] Pool size: ${pool.length}`);
+    if (pool.length === 0) return null;
+
+    let epTargetVcloud: string | null = null;
+    let selectedQualityLabel = '480p';
+
+    if (isTv) {
+      // Sort lockers so 480p comes first if available, followed by 720p then 1080p
+      const sortedPool = [...pool].sort((a, b) => {
+        const order: Record<string, number> = { '480p': 1, '720p': 2, '1080p': 3, '4k': 4 };
+        const qA = order[(a.qualityLabel || '').toLowerCase()] || 99;
+        const qB = order[(b.qualityLabel || '').toLowerCase()] || 99;
+        return qA - qB;
+      });
+
+      // Iterate through candidate NexDrive lockers to extract per-episode VCloud URLs
+      for (const locker of sortedPool) {
+        try {
+          console.log(`[VegaMoviesStream] Checking locker: ${locker.targetUrl} (${locker.qualityLabel})`);
+          const episodes = await fetchVegaMoviesEpisodes(locker.targetUrl);
+          console.log(`[VegaMoviesStream] Locker returned ${episodes.length} episodes`);
+          const singleEpisodes = episodes.filter(
+            (e) => !/\b(?:batch|zip|pack)\b/i.test(e.targetUrl) && !/\b(?:batch|zip|pack)\b/i.test(e.episodeTitle)
+          );
+
+          if (singleEpisodes.length > 0) {
+            const matchedEp = singleEpisodes.find((e) => e.episodeNumber === episodeNum) || singleEpisodes[0];
+            if (matchedEp && matchedEp.targetUrl) {
+              console.log(`[VegaMoviesStream] Matched Ep ${episodeNum}: ${matchedEp.targetUrl}`);
+              epTargetVcloud = matchedEp.targetUrl;
+              selectedQualityLabel = locker.qualityLabel || '720p';
+              break;
+            }
+          }
+        } catch (e: any) {
+          console.log(`[VegaMoviesStream] Locker error: ${e.message}`);
+        }
+      }
+    } else {
+      const option480p = pool.find((o) => o.qualityLabel === '480p') || pool[0];
+      const resolved = await resolveVegaMoviesLocker(option480p.targetUrl, option480p.qualityLabel || '480p');
+      if (resolved && resolved.success && isStreamableVideoUrl(resolved.streamUrl)) {
+        return {
+          url: resolved.streamUrl || '',
+          qualityLabel: `VEGAMOVIES (${resolved.providerName || 'VCLOUD'})`,
+        };
+      }
+      return null;
+    }
+
+    console.log(`[VegaMoviesStream] epTargetVcloud: ${epTargetVcloud}`);
+    if (!epTargetVcloud) return null;
+
+    // Pass 2: epTargetVcloud is a direct vcloud.zip/... URL — use the dedicated resolver
+    const directUrl = await resolveVcloudDirectStream(epTargetVcloud, selectedQualityLabel);
+    console.log(`[VegaMoviesStream] directUrl resolved: ${directUrl}`);
+
+    if (directUrl) {
+      return {
+        url: directUrl,
+        qualityLabel: `VEGAMOVIES ${selectedQualityLabel.toUpperCase()} (VCLOUD DIRECT)`,
+      };
+    }
+  } catch (e: any) {
+    console.warn('[VegaMovies Stream Resolver Error]', e);
+  }
+
+  return null;
+}
+

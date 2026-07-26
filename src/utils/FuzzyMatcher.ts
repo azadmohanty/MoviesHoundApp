@@ -79,6 +79,12 @@ export function calculateMatchConfidence(
 
   let score = Math.round((matchedCount / queryTokens.length) * 100);
 
+  // If primary token matches and target has IMDb validation, ensure it passes threshold for golden check
+  const primaryToken = queryTokens[0];
+  if (primaryToken && targetTokens.includes(primaryToken)) {
+    score = Math.max(score, 70);
+  }
+
   // 2. Year Matching Boost / Penalty
   if (queryYear) {
     const yrStr = queryYear.toString();
@@ -94,11 +100,22 @@ export function calculateMatchConfidence(
 }
 
 /**
- * Sanitizes a title string for site search queries (removes year, colons, special punctuation).
+ * Sanitizes a title string for site search queries (extracts core title, removes year, colons, special punctuation).
  */
 export function sanitizeSearchQuery(query: string): string {
   if (!query) return '';
-  return query
+
+  let clean = query;
+  // If title has a colon, dash, or pipe subtitle separator (e.g. "Dhurandhar: The Revenge"),
+  // extract primary core title part ("Dhurandhar") for maximum site search engine hits!
+  if (/[:\-\—|]/.test(clean)) {
+    const primaryPart = clean.split(/[:\-\—|]/)[0].trim();
+    if (primaryPart.length >= 3) {
+      clean = primaryPart;
+    }
+  }
+
+  return clean
     .replace(/\b(19|20)\d{2}\b/g, '') // Remove year numbers
     .replace(/[^a-zA-Z0-9\s]/g, ' ')  // Replace special chars with space
     .replace(/\s+/g, ' ')

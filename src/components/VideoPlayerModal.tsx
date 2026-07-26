@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Image } from 'expo-image';
 import {
   StyleSheet,
   View,
@@ -8,20 +7,29 @@ import {
   Text,
   StatusBar,
   ScrollView,
+  Image,
   ActivityIndicator,
   Dimensions,
   Animated,
+  PanResponder,
+  BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { VideoView, useVideoPlayer } from 'expo-video';
+let ScreenOrientation: typeof import('expo-screen-orientation') | null = null;
+try {
+  ScreenOrientation = require('expo-screen-orientation');
+} catch (e) {
+  // Graceful fallback if native module is unlinked in Expo Go
+}
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { getMediaCredits, getSimilarMedia, getTVShowDetails, CastMember, TMDBMediaItem, TVShowDetails } from '../utils/tmdb';
 import { getStreamServerUrl, resolveStreamUrl } from '../utils/streamResolver';
 import { recordPlaybackDuration, recordUserAction } from '../utils/TasteEngine';
 import { toggleListItem, isInList, STORAGE_KEYS, subscribeStorageChanges } from '../utils/DatabaseStorage';
-import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic } from '../utils/HapticsHelper';
+import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic, triggerSelectionHaptic } from '../utils/HapticsHelper';
 
 const { width } = Dimensions.get('window');
 
@@ -77,6 +85,135 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [isLoved, setIsLoved] = useState(false);
   const [isDisliked, setIsDisliked] = useState(false);
   const [showServers, setShowServers] = useState(false);
+
+  // YouTube-style Floating Mini Player & Gesture States: 'FULL' | 'MINI' | 'LANDSCAPE'
+  const [playerMode, setPlayerMode] = useState<'FULL' | 'MINI' | 'LANDSCAPE'>('FULL');
+  const [isPlayingState, setIsPlayingState] = useState(true);
+
+  // In-Player Custom Control Overlay States (Speed & Audio Track Menus)
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
+  const [showSpeedMenu, setShowSpeedMenu] = useState<boolean>(false);
+  const [showAudioMenu, setShowAudioMenu] = useState<boolean>(false);
+
+  const handleSelectSpeed = (speed: number) => {
+    triggerSelectionHaptic();
+    setPlaybackSpeed(speed);
+    setShowSpeedMenu(false);
+    try {
+      if (player) {
+        player.playbackRate = speed;
+      }
+    } catch (e) {
+      console.warn('[VideoPlayer] player.playbackRate error:', e);
+    }
+  };
+
+  // WebView ref for audio stop injection on close
+  const webviewRef = useRef<any>(null);
+
+  // Mini player swipe gesture: swipe UP → expand to FULL, swipe DOWN → close
+  const miniSwipeResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 10 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy < -30) {
+          // Swipe UP on mini player → expand back to FULL
+          triggerSelectionHaptic();
+          setPlayerMode('FULL');
+        } else if (g.dy > 30) {
+          // Swipe DOWN on mini player → close entirely
+          triggerSelectionHaptic();
+          handleClose();
+        }
+      },
+    })
+  ).current;
+
+  // Full player swipe gesture: swipe DOWN → minimize to MINI popup
+  const playerSwipeResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 15 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > 40 && playerMode === 'FULL' && activeUrl) {
+          // Swipe DOWN on full player → minimize to mini
+          triggerSelectionHaptic();
+          setPlayerMode('MINI');
+        } else if (g.dy < -40 && playerMode === 'LANDSCAPE') {
+          // Swipe UP in landscape → back to portrait full
+          triggerSelectionHaptic();
+          setPlayerMode('FULL');
+        }
+      },
+    })
+  ).current;
+
+  // Native Device Orientation Lock (Rotates screen safely if native module exists)
+  useEffect(() => {
+    if (ScreenOrientation && ScreenOrientation.lockAsync) {
+      if (visible && playerMode === 'LANDSCAPE') {
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT).catch(() => {});
+      } else {
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      }
+    }
+
+    return () => {
+      if (ScreenOrientation && ScreenOrientation.lockAsync) {
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      }
+    };
+  }, [visible, playerMode]);
+
+  // Double Back Press Confirmation to avoid accidental exit
+  const [backPressCount, setBackPressCount] = useState<number>(0);
+  const [showExitToast, setShowExitToast] = useState<boolean>(false);
+  const backPressTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Android Hardware Back Button Interceptor
+  useEffect(() => {
+    const onBackPress = () => {
+      if (!visible) return false;
+
+      if (playerMode === 'LANDSCAPE') {
+        triggerSelectionHaptic();
+        setPlayerMode('FULL');
+        return true;
+      }
+
+      if (playerMode === 'FULL' && activeUrl) {
+        triggerLightHaptic();
+        setPlayerMode('MINI');
+        return true;
+      }
+
+      if (playerMode === 'MINI' || (playerMode === 'FULL' && !activeUrl)) {
+        if (backPressCount === 0) {
+          setBackPressCount(1);
+          setShowExitToast(true);
+          triggerLightHaptic();
+          if (backPressTimer.current) clearTimeout(backPressTimer.current);
+          backPressTimer.current = setTimeout(() => {
+            setBackPressCount(0);
+            setShowExitToast(false);
+          }, 2000);
+          return true;
+        } else {
+          if (backPressTimer.current) clearTimeout(backPressTimer.current);
+          setBackPressCount(0);
+          setShowExitToast(false);
+          handleClose();
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [visible, playerMode, activeUrl, backPressCount]);
 
   // Multi-Heart Floating Particle Burst Animation State
   const [particles, setParticles] = useState<Array<{ id: number; animX: Animated.Value; animY: Animated.Value; opacity: Animated.Value; scale: Animated.Value }>>([]);
@@ -183,10 +320,23 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setDebugLogs(prev => [entry, ...prev.slice(0, 49)]);
   };
 
+  const latestRequestId = useRef(0);
+
   const isDirectVideoFile = Boolean(
     activeUrl &&
-    (activeUrl.includes('.m3u8') || activeUrl.includes('.mp4')) &&
+    (
+      activeUrl.includes('.mkv') ||
+      activeUrl.includes('.mp4') ||
+      activeUrl.includes('.m3u8') ||
+      activeUrl.includes('r2.cloudflarestorage.com') ||
+      activeUrl.includes('r2.dev') ||
+      activeUrl.includes('.webm') ||
+      activeUrl.includes('.ts') ||
+      activeUrl.includes('hakunaymatata.com')
+    ) &&
     !activeUrl.startsWith('moviebox://') &&
+    !activeUrl.startsWith('vegamovies480p://') &&
+    !activeUrl.startsWith('fast480p://') &&
     !activeUrl.startsWith('torrentio://')
   );
 
@@ -200,14 +350,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     playerInstance.loop = false;
   });
 
-  // Feed new direct video URLs into the player instance whenever activeUrl changes
+  // Feed new direct video URLs into the native player instance whenever activeUrl changes
   useEffect(() => {
-    if (
-      activeUrl &&
-      (activeUrl.includes('.mp4') || activeUrl.includes('.m3u8')) &&
-      !activeUrl.startsWith('moviebox://') &&
-      !activeUrl.startsWith('torrentio://')
-    ) {
+    if (isDirectVideoFile && activeUrl) {
       try {
         player.replaceAsync({
           uri: activeUrl,
@@ -217,6 +362,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           }
         }).then(() => {
           player.play();
+          setIsPlayingState(true);
         }).catch((e: any) => {
           console.warn('[VideoPlayer] player.replaceAsync error:', e);
         });
@@ -224,15 +370,32 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
         console.warn('[VideoPlayer] player.replaceAsync exception:', e);
       }
     }
-  }, [activeUrl]);
+  }, [activeUrl, isDirectVideoFile]);
 
   const handleClose = () => {
+    // Stop expo-video player
+    try { player.pause(); } catch (e) {}
+    // Stop any WebView HTML5 audio/video elements to prevent audio leak
     try {
-      player.pause();
+      if (webviewRef.current) {
+        webviewRef.current.injectJavaScript(
+          `document.querySelectorAll('video,audio').forEach(function(v){v.pause();v.src='';});true;`
+        );
+      }
     } catch (e) {}
     setActiveUrl(null);
     setLoadingStream(false);
+    setPlayerMode('FULL');
     onClose();
+  };
+
+  const handleMinimize = () => {
+    if (activeUrl) {
+      triggerLightHaptic();
+      setPlayerMode('MINI');
+    } else {
+      handleClose();
+    }
   };
 
   useEffect(() => {
@@ -241,7 +404,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setCurrentEpisode(1);
     setShowTroubleshoot(false);
     setDebugLogs([]);
-    setActiveUrl(null); // Land on poster preview & details first; user taps server or play to stream
+    setActiveUrl(null);
+    setPlayerMode('FULL');
 
     if (visible && mediaItem) {
       addLog(`Opened media: "${mediaItem.title || title}" (TMDB ID: ${mediaItem.id})`);
@@ -253,6 +417,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       } catch (e) {}
       setActiveUrl(null);
       setLoadingStream(false);
+      setPlayerMode('FULL');
     }
   }, [videoUrl, visible]);
 
@@ -283,7 +448,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     }
   };
 
-  const updatePlayerUrl = async (serverIdx: number, season: number, episode: number, lang: string = selectedLanguage) => {
+  const updatePlayerUrl = async (
+    serverIdx: number,
+    season: number,
+    episode: number,
+    lang: string = selectedLanguage,
+    isFailoverStep: boolean = false
+  ) => {
+    // If this is a new manual selection or starting step, increment reqId to CANCEL all previous ongoing background tasks instantly!
+    const reqId = isFailoverStep ? latestRequestId.current : ++latestRequestId.current;
+    
     setSelectedServer(serverIdx);
     setCurrentSeason(season);
     setCurrentEpisode(episode);
@@ -291,16 +465,17 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     setActiveUrl(null);
 
     if (mediaItem) {
-      addLog(`Switching to Server ${serverIdx} (Season ${season}, Ep ${episode}, Lang ${lang})`);
-      if (serverIdx === 1 || serverIdx === 2) {
+      addLog(`[SERVER ${serverIdx}] Resolving stream (Season ${season}, Ep ${episode}, Lang ${lang})...`);
+      
+      if (serverIdx === 1 || serverIdx === 2 || serverIdx === 3) {
         setLoadingStream(true);
-        addLog(`Resolving Server ${serverIdx} stream asynchronously...`);
         const year = mediaItem.releaseDate
           ? String(mediaItem.releaseDate).substring(0, 4)
           : mediaItem.firstAirDate
           ? String(mediaItem.firstAirDate).substring(0, 4)
           : undefined;
         const imdbId = mediaItem.imdbId || undefined;
+        
         const res = await resolveStreamUrl(
           mediaItem.id,
           mediaItem.mediaType || 'movie',
@@ -313,23 +488,38 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           imdbId
         );
 
-        addLog(`[DEBUG] resolveStreamUrl result: isNull=${res === null}, source="${res?.sourceName || 'NONE'}", streamUrl="${res?.streamUrl?.substring(0, 80) || 'NULL'}"`);
+        // Instant Cancellation: If user selected another server during resolution, discard result!
+        if (reqId !== latestRequestId.current) {
+          addLog(`[SERVER SWITCH] Discarded stale resolution result for Server ${serverIdx}`);
+          return;
+        }
+
         if (res && res.streamUrl && (res.streamUrl.startsWith('http://') || res.streamUrl.startsWith('https://'))) {
           addLog(`Server ${serverIdx} resolved successfully (${res.sourceName}) -> ${res.streamUrl.substring(0, 60)}...`);
           setActiveUrl(res.streamUrl);
           if (res.availableLanguages && res.availableLanguages.length > 0) {
             setAvailableLanguages(res.availableLanguages);
           }
+          setLoadingStream(false);
         } else {
-          addLog(`Server ${serverIdx} resolution returned no direct link. URL was: "${res?.streamUrl || 'NULL/EMPTY'}". Falling back to Server 3...`);
-          const fallbackUrl = getStreamServerUrl(3, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
-          setActiveUrl(fallbackUrl);
+          // Sequential Failover: Server 1 -> Server 2 -> Server 3 -> Server 4 (VidSrc Embed)
+          const nextServer = serverIdx + 1;
+          if (nextServer <= 3) {
+            addLog(`Server ${serverIdx} returned no direct link. Sequential failover to Server ${nextServer}...`);
+            updatePlayerUrl(nextServer, season, episode, lang, true);
+          } else {
+            addLog(`Server ${serverIdx} returned no direct link. Final failover to Backup Server (Server 4)...`);
+            setSelectedServer(4);
+            const fallbackUrl = getStreamServerUrl(4, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
+            setActiveUrl(fallbackUrl);
+            setLoadingStream(false);
+          }
         }
-        setLoadingStream(false);
       } else {
         const newUrl = getStreamServerUrl(serverIdx, mediaItem.id, mediaItem.mediaType || 'movie', season, episode, vidsrcBase);
         addLog(`Server ${serverIdx} URL -> ${newUrl}`);
         setActiveUrl(newUrl);
+        setLoadingStream(false);
       }
     }
   };
@@ -367,26 +557,39 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={handleClose}>
-      <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
-      <SafeAreaView style={styles.container}>
-        {/* Top Header Bar */}
-        <View style={styles.topHeader}>
-          <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
-            <Text style={styles.closeText}>✕</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {title.toUpperCase()}
-          </Text>
-          <TouchableOpacity onPress={() => setShowLogs(!showLogs)} style={styles.logButton}>
-            <Text style={[styles.logButtonText, showLogs && { color: '#FFE500' }]}>
-              {showLogs ? '⚡ HIDE LOGS' : '⚡ LOGS'}
+    <>
+      <Modal visible={visible && playerMode !== 'MINI'} animationType="slide" transparent={false} onRequestClose={handleMinimize}>
+        <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
+        <SafeAreaView style={styles.container}>
+          {/* Top Header Bar */}
+          <View style={styles.topHeader}>
+            <TouchableOpacity onPress={handleMinimize} style={styles.closeButton}>
+              <Text style={styles.closeText}>✕</Text>
+            </TouchableOpacity>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {title.toUpperCase()}
             </Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity onPress={() => setShowLogs(!showLogs)} style={styles.logButton}>
+              <Text style={[styles.logButtonText, showLogs && { color: '#FFE500' }]}>
+                {showLogs ? '⚡ HIDE LOGS' : '⚡ LOGS'}
+              </Text>
+            </TouchableOpacity>
+          </View>
 
-        {/* 16:9 YouTube-Style Top Player Container */}
-        <View style={styles.topPlayerBox}>
+          {/* 16:9 YouTube-Style Top Player Container with Swipe Up/Down Gesture Support */}
+          <View style={[styles.topPlayerBox, playerMode === 'LANDSCAPE' && styles.landscapePlayerBox]} {...playerSwipeResponder.panHandlers}>
+          {playerMode === 'LANDSCAPE' && (
+            <TouchableOpacity
+              style={styles.exitLandscapeBtn}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setPlayerMode('FULL');
+              }}
+            >
+              <Ionicons name="contract" size={16} color="#FFFFFF" />
+              <Text style={styles.exitLandscapeText}>PORTRAIT</Text>
+            </TouchableOpacity>
+          )}
           {loadingStream ? (
             <View style={styles.noPlayerBox}>
               <ActivityIndicator size="large" color="#FF2D55" />
@@ -394,35 +597,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </View>
           ) : activeUrl ? (
             isDirectVideoFile ? (
-              activeUrl.includes('.mp4') ? (
-                <WebView
-                  key={activeUrl}
-                  source={{
-                    html: `
-                      <!DOCTYPE html>
-                      <html>
-                      <head>
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-                        <style>
-                          * { box-sizing: border-box; }
-                          body, html { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center; }
-                          video { width:100%; height:100%; object-fit:contain; outline:none; }
-                        </style>
-                      </head>
-                      <body>
-                        <video src="${activeUrl}" controls autoplay playsinline preload="auto" type="video/mp4"></video>
-                      </body>
-                      </html>
-                    `
-                  }}
-                  style={styles.fullPlayer}
-                  javaScriptEnabled={true}
-                  domStorageEnabled={true}
-                  allowsInlineMediaPlayback={true}
-                  mediaPlaybackRequiresUserAction={false}
-                  allowsFullscreenVideo={true}
-                />
-              ) : (
+              <View style={{ flex: 1, position: 'relative' }}>
                 <VideoView
                   style={styles.fullPlayer}
                   player={player}
@@ -431,9 +606,81 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   startsPictureInPictureAutomatically
                   showsTimecodes
                 />
-              )
+                
+                {/* In-Player Overlay Custom Control Pills (Speed & Audio Language) */}
+                <View style={styles.inPlayerOverlayPills}>
+                  {/* Speed Pill */}
+                  <TouchableOpacity
+                    style={styles.playerControlPill}
+                    onPress={() => {
+                      triggerLightHaptic();
+                      setShowSpeedMenu(!showSpeedMenu);
+                      setShowAudioMenu(false);
+                    }}
+                  >
+                    <Ionicons name="speedometer-outline" size={12} color="#FFE500" />
+                    <Text style={styles.playerControlPillText}>{playbackSpeed.toFixed(2).replace(/\.00$/, '')}x</Text>
+                  </TouchableOpacity>
+
+                  {/* Audio Track Pill */}
+                  {availableLanguages.length > 0 && (
+                    <TouchableOpacity
+                      style={styles.playerControlPill}
+                      onPress={() => {
+                        triggerLightHaptic();
+                        setShowAudioMenu(!showAudioMenu);
+                        setShowSpeedMenu(false);
+                      }}
+                    >
+                      <Ionicons name="volume-high-outline" size={12} color="#00FF88" />
+                      <Text style={styles.playerControlPillText}>{selectedLanguage.toUpperCase()}</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Speed Popover Menu */}
+                {showSpeedMenu && (
+                  <View style={styles.inPlayerPopoverMenu}>
+                    <Text style={styles.popoverHeaderTitle}>PLAYBACK SPEED</Text>
+                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
+                      <TouchableOpacity
+                        key={`speed-${s}`}
+                        style={[styles.popoverMenuItem, playbackSpeed === s && styles.popoverMenuItemActive]}
+                        onPress={() => handleSelectSpeed(s)}
+                      >
+                        <Text style={[styles.popoverMenuItemText, playbackSpeed === s && { color: '#0A0A0C', fontWeight: 'bold' }]}>
+                          {s === 1.0 ? 'Normal (1.0x)' : `${s}x`}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {/* Audio Dub Popover Menu */}
+                {showAudioMenu && availableLanguages.length > 0 && (
+                  <View style={styles.inPlayerPopoverMenu}>
+                    <Text style={styles.popoverHeaderTitle}>AUDIO DUB / LANGUAGE</Text>
+                    {availableLanguages.map((lang) => (
+                      <TouchableOpacity
+                        key={`audio-${lang}`}
+                        style={[styles.popoverMenuItem, selectedLanguage === lang && styles.popoverMenuItemActive]}
+                        onPress={() => {
+                          triggerSelectionHaptic();
+                          setShowAudioMenu(false);
+                          updatePlayerUrl(selectedServer, currentSeason, currentEpisode, lang);
+                        }}
+                      >
+                        <Text style={[styles.popoverMenuItemText, selectedLanguage === lang && { color: '#0A0A0C', fontWeight: 'bold' }]}>
+                          🌐 {lang.toUpperCase()}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
             ) : isWebViewUrl ? (
               <WebView
+                ref={webviewRef}
                 key={activeUrl}
                 source={{ uri: activeUrl }}
                 style={styles.fullPlayer}
@@ -444,7 +691,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 injectedJavaScript={blockAdsJS}
                 onShouldStartLoadWithRequest={(request) => {
                   const url = request.url;
-                  // Allow initial load, inner player frames, and legitimate stream player domains
                   if (
                     url.startsWith('http://') ||
                     url.startsWith('https://')
@@ -464,7 +710,6 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                       return true;
                     }
                   }
-                  // Block external ad popups, intent:// URLs, and app store hijacks
                   addLog(`Blocked ad popup redirect -> ${url.substring(0, 50)}...`);
                   return false;
                 }}
@@ -665,20 +910,27 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <View style={styles.tvSection}>
                   <Text style={styles.sectionHeading}>SELECT STREAMING SERVER</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverScroll}>
-                    {[1, 2, 3, 4, 5].map((idx) => (
+                    {[
+                      { id: 1, name: '⚡ SERVER 1 (VEGAMOVIES 480P)' },
+                      { id: 2, name: '🎬 SERVER 2 (MOVIEBOX MP4)' },
+                      { id: 3, name: '⚡ SERVER 3 (FZMOVIES 480P)' },
+                      { id: 4, name: '🌐 SERVER 4 (VIDSRC 2.RU)' },
+                      { id: 5, name: '🌐 SERVER 5 (SUPEREMBED)' },
+                      { id: 6, name: '🌐 SERVER 6 (ANYEMBED)' },
+                    ].map((srv) => (
                       <TouchableOpacity
-                        key={`server-${idx}`}
+                        key={`server-${srv.id}`}
                         style={[
                           styles.serverPill,
-                          selectedServer === idx && { backgroundColor: '#FF2D55', borderColor: '#FF2D55' }
+                          selectedServer === srv.id && { backgroundColor: '#FF2D55', borderColor: '#FF2D55' }
                         ]}
-                        onPress={() => updatePlayerUrl(idx, currentSeason, currentEpisode)}
+                        onPress={() => updatePlayerUrl(srv.id, currentSeason, currentEpisode)}
                       >
                         <Text style={[
                           styles.serverPillText,
-                          selectedServer === idx ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
+                          selectedServer === srv.id ? { color: '#0A0A0C' } : { color: '#FFFFFF' }
                         ]}>
-                          SERVER {idx}
+                          {srv.name}
                         </Text>
                       </TouchableOpacity>
                     ))}
@@ -867,10 +1119,182 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
         </ScrollView>
       </SafeAreaView>
     </Modal>
+
+    {/* YouTube-Style Bottom Mini Player Bar */}
+    {visible && playerMode === 'MINI' && activeUrl && (
+      <Animated.View
+        style={styles.miniPlayerContainer}
+        {...miniSwipeResponder.panHandlers}
+      >
+        {/* Thin red progress bar on top edge (YouTube style) */}
+        <View style={styles.miniProgressBar} />
+
+        <View style={styles.miniPlayerInner}>
+          {/* Thumbnail / Video Preview */}
+          <TouchableOpacity
+            style={styles.miniVideoBox}
+            activeOpacity={0.9}
+            onPress={() => { triggerSelectionHaptic(); setPlayerMode('FULL'); }}
+          >
+            {isDirectVideoFile ? (
+              <VideoView style={{ flex: 1, borderRadius: 4 }} player={player} />
+            ) : (
+              <View style={[styles.miniVideoBox, { backgroundColor: '#1A1A22', justifyContent: 'center', alignItems: 'center' }]}>
+                <Ionicons name="play-circle" size={28} color="#FF2D55" />
+              </View>
+            )}
+            {/* Play overlay icon on thumbnail */}
+            {isDirectVideoFile && (
+              <View style={styles.miniPlayOverlay} pointerEvents="none">
+                <Ionicons name={isPlayingState ? 'pause' : 'play'} size={18} color="rgba(255,255,255,0.8)" />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* Title & subtitle — tap to expand */}
+          <TouchableOpacity
+            style={styles.miniInfoBox}
+            activeOpacity={0.85}
+            onPress={() => { triggerSelectionHaptic(); setPlayerMode('FULL'); }}
+          >
+            <Text style={styles.miniTitle} numberOfLines={1}>
+              {(title || mediaItem?.title || 'NOW PLAYING').toUpperCase()}
+            </Text>
+            <Text style={styles.miniSubTitle} numberOfLines={1}>
+              {loadingStream ? 'RESOLVING...' : selectedServer ? `SERVER ${selectedServer}` : 'STREAMING'}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Play / Pause button */}
+          <TouchableOpacity
+            style={styles.miniControlBtn}
+            onPress={() => {
+              triggerSelectionHaptic();
+              if (isPlayingState) {
+                try { player.pause(); } catch (e) {}
+                setIsPlayingState(false);
+              } else {
+                try { player.play(); } catch (e) {}
+                setIsPlayingState(true);
+              }
+            }}
+          >
+            <Ionicons name={isPlayingState ? 'pause' : 'play'} size={22} color="#FFFFFF" />
+          </TouchableOpacity>
+
+          {/* Close button */}
+          <TouchableOpacity style={styles.miniControlBtn} onPress={handleClose}>
+            <Ionicons name="close" size={22} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      </Animated.View>
+    )}
+
+    {/* Double Back Exit Confirmation Toast */}
+    {showExitToast && (
+      <View style={styles.exitToastContainer}>
+        <Text style={styles.exitToastText}>Press back again to exit video player</Text>
+      </View>
+    )}
+    </>
   );
 };
 
 const styles = StyleSheet.create({
+  // YouTube-style full-width bottom mini player bar
+  miniPlayerContainer: {
+    position: 'absolute',
+    bottom: 56, // just above bottom tabs
+    left: 0,
+    right: 0,
+    height: 68,
+    backgroundColor: '#121214',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+    elevation: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    zIndex: 9999,
+  },
+  miniProgressBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '35%', // simulated static progress bar for aesthetics
+    height: 2,
+    backgroundColor: '#FF2D55',
+    borderRadius: 1,
+  },
+  miniPlayerInner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    gap: 10,
+  },
+  miniVideoBox: {
+    width: 108,
+    height: 54,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: '#000000',
+    position: 'relative',
+  },
+  miniPlayOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  miniInfoBox: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  miniTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  miniSubTitle: {
+    fontFamily: 'NType82Mono',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.5)',
+    marginTop: 2,
+  },
+  miniControlBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitToastContainer: {
+    position: 'absolute',
+    bottom: 90,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(15, 15, 20, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#FF2D55',
+    zIndex: 999999,
+    shadowColor: '#FF2D55',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  exitToastText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
   container: {
     flex: 1,
     backgroundColor: '#0A0A0C',
@@ -927,9 +1351,108 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
     position: 'relative',
   },
+  landscapePlayerBox: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    aspectRatio: undefined,
+    zIndex: 99999,
+    backgroundColor: '#000000',
+  },
+  exitLandscapeBtn: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    zIndex: 100000,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(10, 10, 12, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#FF2D55',
+    gap: 6,
+  },
+  exitLandscapeText: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
   fullPlayer: {
     width: '100%',
     height: '100%',
+  },
+  inPlayerOverlayPills: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    zIndex: 10001,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  playerControlPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(10, 10, 12, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    gap: 5,
+  },
+  playerControlPillText: {
+    fontFamily: 'Ndot57',
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  inPlayerPopoverMenu: {
+    position: 'absolute',
+    top: 44,
+    right: 12,
+    zIndex: 10002,
+    backgroundColor: 'rgba(15, 15, 20, 0.95)',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#FF2D55',
+    padding: 8,
+    minWidth: 160,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  popoverHeaderTitle: {
+    fontFamily: 'Ndot57',
+    fontSize: 9,
+    color: '#8E8E93',
+    marginBottom: 6,
+    paddingHorizontal: 6,
+    letterSpacing: 0.5,
+  },
+  popoverMenuItem: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    marginVertical: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  popoverMenuItemActive: {
+    backgroundColor: '#FFE500',
+  },
+  popoverMenuItemText: {
+    fontFamily: 'Ndot57',
+    fontSize: 11,
+    color: '#FFFFFF',
   },
   noPlayerBox: {
     flex: 1,
