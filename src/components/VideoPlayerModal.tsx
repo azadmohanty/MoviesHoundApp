@@ -102,13 +102,16 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [playerMode, setPlayerMode] = useState<'FULL' | 'MINI' | 'LANDSCAPE'>('FULL');
   const [isPlayingState, setIsPlayingState] = useState(true);
 
-  // In-Player Custom Control Overlay & YouTube Settings Sheet States
+  // In-Player Custom Control Overlay & Video.js Popover Settings States
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
-  const [showSettingsSheet, setShowSettingsSheet] = useState<boolean>(false);
+  const [showVjsSettingsMenu, setShowVjsSettingsMenu] = useState<boolean>(false);
+  const [vjsMenuLevel, setVjsMenuLevel] = useState<'main' | 'quality' | 'audio' | 'speed' | 'captions'>('main');
   const [ccEnabled, setCcEnabled] = useState<boolean>(false);
   const [selectedQuality, setSelectedQuality] = useState<string>('480p');
   const [showControls, setShowControls] = useState<boolean>(true);
   const controlsTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [doubleTapFeedback, setDoubleTapFeedback] = useState<{ type: 'rewind' | 'forward'; id: number } | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
 
   const resetControlsTimeout = () => {
     setShowControls(true);
@@ -127,6 +130,40 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     } else {
       resetControlsTimeout();
     }
+  };
+
+  const handleVideoTouch = (evt: any) => {
+    const now = Date.now();
+    const { locationX } = evt.nativeEvent;
+    const playerWidth = Dimensions.get('window').width;
+    const timeDelta = now - lastTapRef.current.time;
+
+    // Double tap within 300ms
+    if (timeDelta < 300) {
+      if (locationX < playerWidth * 0.35) {
+        // Double tap LEFT -> Seek -10s
+        triggerLightHaptic();
+        try {
+          if (player) player.currentTime = Math.max(0, (player.currentTime || 0) - 10);
+        } catch (e) {}
+        setDoubleTapFeedback({ type: 'rewind', id: now });
+        setTimeout(() => setDoubleTapFeedback(null), 700);
+      } else if (locationX > playerWidth * 0.65) {
+        // Double tap RIGHT -> Seek +10s
+        triggerLightHaptic();
+        try {
+          if (player) player.currentTime = Math.min(player.duration || 0, (player.currentTime || 0) + 10);
+        } catch (e) {}
+        setDoubleTapFeedback({ type: 'forward', id: now });
+        setTimeout(() => setDoubleTapFeedback(null), 700);
+      } else {
+        toggleControls();
+      }
+    } else {
+      toggleControls();
+    }
+
+    lastTapRef.current = { time: now, x: locationX };
   };
 
   const handleSelectSpeed = (speed: number) => {
@@ -657,25 +694,39 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </View>
           ) : activeUrl ? (
             isDirectVideoFile ? (
-              <View style={{ flex: 1, position: 'relative' }}>
+              <View style={{ flex: 1, width: '100%', height: '100%', position: 'relative' }}>
                 <VideoView
                   style={styles.fullPlayer}
                   player={player}
                   fullscreenOptions={{ enable: true }}
-                  allowsPictureInPicture
-                  startsPictureInPictureAutomatically
+                  allowsPictureInPicture={false}
+                  contentFit="contain"
                   nativeControls={false}
                 />
-                
-                {/* 100% YouTube Screenshot 3 Clean Overlay */}
+
+                {/* Double-Tap Gesture Overlay Container */}
                 <TouchableOpacity
                   activeOpacity={1}
                   style={styles.cleanPlayerOverlay}
-                  onPress={toggleControls}
+                  onPress={handleVideoTouch}
                 >
+                  {/* Animated Double-Tap Seek Feedback Badges */}
+                  {doubleTapFeedback && (
+                    <View style={doubleTapFeedback.type === 'rewind' ? styles.doubleTapBadgeLeft : styles.doubleTapBadgeRight}>
+                      <Ionicons
+                        name={doubleTapFeedback.type === 'rewind' ? 'refresh-outline' : 'reload-outline'}
+                        size={26}
+                        color="#FFFFFF"
+                      />
+                      <Text style={styles.doubleTapBadgeText}>
+                        {doubleTapFeedback.type === 'rewind' ? '-10s' : '+10s'}
+                      </Text>
+                    </View>
+                  )}
+
                   {showControls && (
                     <View style={styles.cleanControlsContainer}>
-                      {/* Top Control Bar: Back Arrow on Left, Gear & Fullscreen on Right */}
+                      {/* Top Bar: Back Arrow on Left */}
                       <View style={styles.cleanTopControls}>
                         <TouchableOpacity
                           style={styles.cleanIconBtn}
@@ -686,51 +737,201 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                         >
                           <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
                         </TouchableOpacity>
-
-                        <View style={styles.cleanTopRightGroup}>
-                          {/* Gear Settings Button */}
-                          <TouchableOpacity
-                            style={styles.cleanIconBtn}
-                            onPress={() => {
-                              triggerLightHaptic();
-                              setShowSettingsSheet(true);
-                            }}
-                          >
-                            <Ionicons name="settings-sharp" size={18} color="#FFFFFF" />
-                          </TouchableOpacity>
-
-                          {/* Fullscreen / Rotate Button */}
-                          <TouchableOpacity
-                            style={styles.cleanIconBtn}
-                            onPress={() => {
-                              triggerSelectionHaptic();
-                              setPlayerMode((prev) => (prev === 'LANDSCAPE' ? 'FULL' : 'LANDSCAPE'));
-                            }}
-                          >
-                            <Ionicons name={playerMode === 'LANDSCAPE' ? 'contract-outline' : 'scan-outline'} size={18} color="#FFFFFF" />
-                          </TouchableOpacity>
-                        </View>
                       </View>
 
-                      {/* Center Control Group: 3 Clean Translucent Dark Circles (↺10  ⏯  ↻10) */}
-                      <View style={styles.cleanCenterControls}>
-                        {/* Seek Rewind 10s */}
-                        <TouchableOpacity
-                          style={styles.cleanCircleBtnSecondary}
-                          onPress={() => {
-                            triggerLightHaptic();
-                            resetControlsTimeout();
-                            try {
-                              if (player) player.currentTime = Math.max(0, (player.currentTime || 0) - 10);
-                            } catch (e) {}
-                          }}
-                        >
-                          <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />
-                        </TouchableOpacity>
+                      {/* Video.js Floating Settings Popover Menu (Images 3 & 4) */}
+                      {showVjsSettingsMenu && (
+                        <View style={styles.vjsPopoverCard}>
+                          {vjsMenuLevel === 'main' ? (
+                            <View style={styles.vjsMenuList}>
+                              {/* 1. Quality Row */}
+                              <TouchableOpacity
+                                style={styles.vjsMenuItem}
+                                onPress={() => {
+                                  triggerLightHaptic();
+                                  setVjsMenuLevel('quality');
+                                }}
+                              >
+                                <View style={styles.vjsMenuLeftGroup}>
+                                  <MaterialCommunityIcons name="quality-high" size={16} color="rgba(255, 255, 255, 0.85)" />
+                                  <Text style={styles.vjsMenuItemLabel}>Quality</Text>
+                                </View>
+                                <View style={styles.vjsMenuRightGroup}>
+                                  <Text style={styles.vjsMenuItemHint}>{selectedQuality}</Text>
+                                  <Ionicons name="chevron-forward" size={14} color="rgba(255, 255, 255, 0.4)" />
+                                </View>
+                              </TouchableOpacity>
 
-                        {/* Main Play / Pause Circle */}
+                              {/* 2. Audio Track Row */}
+                              <TouchableOpacity
+                                style={styles.vjsMenuItem}
+                                onPress={() => {
+                                  triggerLightHaptic();
+                                  setVjsMenuLevel('audio');
+                                }}
+                              >
+                                <View style={styles.vjsMenuLeftGroup}>
+                                  <Ionicons name="volume-high-outline" size={16} color="rgba(255, 255, 255, 0.85)" />
+                                  <Text style={styles.vjsMenuItemLabel}>Audio</Text>
+                                </View>
+                                <View style={styles.vjsMenuRightGroup}>
+                                  <Text style={styles.vjsMenuItemHint}>{selectedLanguage}</Text>
+                                  <Ionicons name="chevron-forward" size={14} color="rgba(255, 255, 255, 0.4)" />
+                                </View>
+                              </TouchableOpacity>
+
+                              {/* 3. Speed Row */}
+                              <TouchableOpacity
+                                style={styles.vjsMenuItem}
+                                onPress={() => {
+                                  triggerLightHaptic();
+                                  setVjsMenuLevel('speed');
+                                }}
+                              >
+                                <View style={styles.vjsMenuLeftGroup}>
+                                  <Ionicons name="speedometer-outline" size={16} color="rgba(255, 255, 255, 0.85)" />
+                                  <Text style={styles.vjsMenuItemLabel}>Speed</Text>
+                                </View>
+                                <View style={styles.vjsMenuRightGroup}>
+                                  <Text style={styles.vjsMenuItemHint}>{playbackSpeed === 1.0 ? '1x' : `${playbackSpeed}x`}</Text>
+                                  <Ionicons name="chevron-forward" size={14} color="rgba(255, 255, 255, 0.4)" />
+                                </View>
+                              </TouchableOpacity>
+
+                              {/* 4. Captions Row */}
+                              <TouchableOpacity
+                                style={styles.vjsMenuItem}
+                                onPress={() => {
+                                  triggerLightHaptic();
+                                  setVjsMenuLevel('captions');
+                                }}
+                              >
+                                <View style={styles.vjsMenuLeftGroup}>
+                                  <Ionicons name="chatbox-ellipses-outline" size={16} color="rgba(255, 255, 255, 0.85)" />
+                                  <Text style={styles.vjsMenuItemLabel}>Captions</Text>
+                                </View>
+                                <View style={styles.vjsMenuRightGroup}>
+                                  <Text style={styles.vjsMenuItemHint}>{ccEnabled ? 'On' : 'Off'}</Text>
+                                  <Ionicons name="chevron-forward" size={14} color="rgba(255, 255, 255, 0.4)" />
+                                </View>
+                              </TouchableOpacity>
+                            </View>
+                          ) : (
+                            <View style={styles.vjsMenuList}>
+                              {/* Submenu Back Header */}
+                              <TouchableOpacity
+                                style={styles.vjsMenuBackHeader}
+                                onPress={() => {
+                                  triggerLightHaptic();
+                                  setVjsMenuLevel('main');
+                                }}
+                              >
+                                <Ionicons name="chevron-back" size={16} color="#FFFFFF" />
+                                <Text style={styles.vjsMenuBackTitle}>
+                                  {vjsMenuLevel.charAt(0).toUpperCase() + vjsMenuLevel.slice(1)}
+                                </Text>
+                              </TouchableOpacity>
+
+                              <View style={styles.vjsMenuSeparator} />
+
+                              {/* Submenu Radio Items */}
+                              {vjsMenuLevel === 'quality' && (
+                                ['480p', '720p'].map((q) => (
+                                  <TouchableOpacity
+                                    key={`vjs-q-${q}`}
+                                    style={styles.vjsRadioItem}
+                                    onPress={() => {
+                                      triggerSelectionHaptic();
+                                      setSelectedQuality(q);
+                                      setShowVjsSettingsMenu(false);
+                                    }}
+                                  >
+                                    <Text style={[styles.vjsRadioLabel, selectedQuality === q && styles.vjsRadioActive]}>
+                                      {q === '480p' ? 'Auto (480p)' : '720p (HD)'}
+                                    </Text>
+                                    {selectedQuality === q && (
+                                      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
+                                    )}
+                                  </TouchableOpacity>
+                                ))
+                              )}
+
+                              {vjsMenuLevel === 'audio' && (
+                                (availableLanguages.length > 0 ? availableLanguages : ['Original', 'Hindi', 'English']).map((lang) => (
+                                  <TouchableOpacity
+                                    key={`vjs-audio-${lang}`}
+                                    style={styles.vjsRadioItem}
+                                    onPress={() => {
+                                      triggerSelectionHaptic();
+                                      setSelectedLanguage(lang);
+                                      setShowVjsSettingsMenu(false);
+                                      updatePlayerUrl(selectedServer, currentSeason, currentEpisode, lang);
+                                    }}
+                                  >
+                                    <Text style={[styles.vjsRadioLabel, selectedLanguage === lang && styles.vjsRadioActive]}>
+                                      {lang.toUpperCase()}
+                                    </Text>
+                                    {selectedLanguage === lang && (
+                                      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
+                                    )}
+                                  </TouchableOpacity>
+                                ))
+                              )}
+
+                              {vjsMenuLevel === 'speed' && (
+                                [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
+                                  <TouchableOpacity
+                                    key={`vjs-speed-${s}`}
+                                    style={styles.vjsRadioItem}
+                                    onPress={() => {
+                                      triggerSelectionHaptic();
+                                      handleSelectSpeed(s);
+                                      setShowVjsSettingsMenu(false);
+                                    }}
+                                  >
+                                    <Text style={[styles.vjsRadioLabel, playbackSpeed === s && styles.vjsRadioActive]}>
+                                      {s === 1.0 ? '1x (Normal)' : `${s}x`}
+                                    </Text>
+                                    {playbackSpeed === s && (
+                                      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
+                                    )}
+                                  </TouchableOpacity>
+                                ))
+                              )}
+
+                              {vjsMenuLevel === 'captions' && (
+                                [
+                                  { label: 'Off', val: false },
+                                  { label: 'English', val: true }
+                                ].map((cap) => (
+                                  <TouchableOpacity
+                                    key={`vjs-cap-${cap.label}`}
+                                    style={styles.vjsRadioItem}
+                                    onPress={() => {
+                                      triggerSelectionHaptic();
+                                      setCcEnabled(cap.val);
+                                      setShowVjsSettingsMenu(false);
+                                    }}
+                                  >
+                                    <Text style={[styles.vjsRadioLabel, ccEnabled === cap.val && styles.vjsRadioActive]}>
+                                      {cap.label}
+                                    </Text>
+                                    {ccEnabled === cap.val && (
+                                      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
+                                    )}
+                                  </TouchableOpacity>
+                                ))
+                              )}
+                            </View>
+                          )}
+                        </View>
+                      )}
+
+                      {/* Video.js Modern Floating Glass Control Bar (vjs-control-bar) */}
+                      <View style={styles.vjsFloatingBar}>
+                        {/* 1. Play / Pause Toggle (▶ / ❚❚) */}
                         <TouchableOpacity
-                          style={styles.cleanCircleBtnPrimary}
+                          style={styles.vjsBtn}
                           onPress={() => {
                             triggerSelectionHaptic();
                             resetControlsTimeout();
@@ -745,15 +946,29 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                         >
                           <Ionicons
                             name={isPlayingState ? 'pause' : 'play'}
-                            size={28}
+                            size={16}
                             color="#FFFFFF"
-                            style={!isPlayingState ? { marginLeft: 3 } : undefined}
+                            style={!isPlayingState ? { marginLeft: 2 } : undefined}
                           />
                         </TouchableOpacity>
 
-                        {/* Seek Fast-Forward 10s */}
+                        {/* 2. Seek Rewind -10s (↺10) */}
                         <TouchableOpacity
-                          style={styles.cleanCircleBtnSecondary}
+                          style={styles.vjsBtn}
+                          onPress={() => {
+                            triggerLightHaptic();
+                            resetControlsTimeout();
+                            try {
+                              if (player) player.currentTime = Math.max(0, (player.currentTime || 0) - 10);
+                            } catch (e) {}
+                          }}
+                        >
+                          <MaterialCommunityIcons name="rewind-10" size={18} color="#FFFFFF" />
+                        </TouchableOpacity>
+
+                        {/* 3. Seek Fast-Forward +10s (↻10) */}
+                        <TouchableOpacity
+                          style={styles.vjsBtn}
                           onPress={() => {
                             triggerLightHaptic();
                             resetControlsTimeout();
@@ -762,23 +977,21 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                             } catch (e) {}
                           }}
                         >
-                          <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />
+                          <MaterialCommunityIcons name="fast-forward-10" size={18} color="#FFFFFF" />
                         </TouchableOpacity>
-                      </View>
 
-                      {/* Bottom Control Bar: Timestamps, Interactive Scrubber Bar & CC Toggle */}
-                      <View style={styles.cleanBottomControls}>
-                        <Text style={styles.cleanTimeText}>
+                        {/* 4. Current Time Display (0:00) */}
+                        <Text style={styles.vjsTimeText}>
                           {formatSecToTime(player?.currentTime || 0)}
                         </Text>
-                        
-                        {/* Interactive Scrubber Bar */}
+
+                        {/* 5. Video.js Center Interactive Timeline Scrubber Bar */}
                         <TouchableOpacity
                           activeOpacity={1}
-                          style={styles.cleanScrubberContainer}
+                          style={styles.vjsScrubberContainer}
                           onPress={(evt) => {
                             const { locationX } = evt.nativeEvent;
-                            const containerWidth = width - 130;
+                            const containerWidth = Dimensions.get('window').width - 240;
                             const duration = player?.duration || 0;
                             if (duration > 0 && containerWidth > 0) {
                               const seekRatio = Math.max(0, Math.min(1, locationX / containerWidth));
@@ -789,10 +1002,10 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                             }
                           }}
                         >
-                          <View style={styles.cleanScrubberTrack}>
+                          <View style={styles.vjsScrubberTrack}>
                             <View
                               style={[
-                                styles.cleanScrubberFill,
+                                styles.vjsScrubberFill,
                                 {
                                   width: `${Math.min(
                                     100,
@@ -806,7 +1019,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                             />
                             <View
                               style={[
-                                styles.cleanScrubberThumb,
+                                styles.vjsScrubberThumb,
                                 {
                                   left: `${Math.min(
                                     100,
@@ -821,20 +1034,33 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                           </View>
                         </TouchableOpacity>
 
-                        <Text style={styles.cleanTimeText}>
-                          {formatSecToTime(player?.duration || 0)}
+                        {/* 6. Remaining / Duration Display (-1:45:15) */}
+                        <Text style={styles.vjsTimeText}>
+                          -{formatSecToTime((player?.duration || 0) - (player?.currentTime || 0))}
                         </Text>
 
-                        {/* CC Toggle */}
+                        {/* 7. Video.js Floating Settings Gear Button (⚙) */}
                         <TouchableOpacity
-                          style={[styles.cleanIconBtn, ccEnabled && { backgroundColor: 'rgba(255, 45, 85, 0.4)' }]}
+                          style={[styles.vjsBtn, showVjsSettingsMenu && { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]}
                           onPress={() => {
-                            triggerSelectionHaptic();
+                            triggerLightHaptic();
                             resetControlsTimeout();
-                            setCcEnabled(!ccEnabled);
+                            setShowVjsSettingsMenu(!showVjsSettingsMenu);
+                            setVjsMenuLevel('main');
                           }}
                         >
-                          <Ionicons name="chatbox-ellipses-outline" size={16} color={ccEnabled ? '#FF2D55' : '#FFFFFF'} />
+                          <Ionicons name="settings-sharp" size={16} color="#FFFFFF" />
+                        </TouchableOpacity>
+
+                        {/* 8. Fullscreen / Rotate Expand Button (⛶) */}
+                        <TouchableOpacity
+                          style={styles.vjsBtn}
+                          onPress={() => {
+                            triggerSelectionHaptic();
+                            setPlayerMode((prev) => (prev === 'LANDSCAPE' ? 'FULL' : 'LANDSCAPE'));
+                          }}
+                        >
+                          <Ionicons name={playerMode === 'LANDSCAPE' ? 'contract-outline' : 'scan-outline'} size={16} color="#FFFFFF" />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -1360,109 +1586,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       </Animated.View>
     )}
 
-    {/* YouTube-Style Settings Bottom Sheet Modal */}
-    <Modal
-      visible={showSettingsSheet}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={() => setShowSettingsSheet(false)}
-    >
-      <TouchableOpacity
-        style={styles.settingsBackdrop}
-        activeOpacity={1}
-        onPress={() => setShowSettingsSheet(false)}
-      >
-        <TouchableOpacity style={styles.settingsSheetCard} activeOpacity={1}>
-          {/* Sheet Handle Bar */}
-          <View style={styles.sheetHandleBar} />
 
-          <Text style={styles.sheetHeaderTitle}>PLAYBACK SETTINGS</Text>
-
-          {/* 1. Quality Selection (480p / 720p Max) */}
-          <View style={styles.sheetSection}>
-            <View style={styles.sheetRowHeader}>
-              <Ionicons name="options-outline" size={16} color="#FFE500" />
-              <Text style={styles.sheetSectionTitle}>STREAM QUALITY (MAX 720P)</Text>
-            </View>
-            <View style={styles.sheetPillsRow}>
-              {['480p', '720p'].map((q) => (
-                <TouchableOpacity
-                  key={`quality-${q}`}
-                  style={[styles.sheetPill, selectedQuality === q && styles.sheetPillActive]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setSelectedQuality(q);
-                  }}
-                >
-                  <Text style={[styles.sheetPillText, selectedQuality === q && styles.sheetPillTextActive]}>
-                    {q === '480p' ? '480p (FAST MOBILE)' : '720p (HD MAX)'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* 2. Playback Speed */}
-          <View style={styles.sheetSection}>
-            <View style={styles.sheetRowHeader}>
-              <Ionicons name="speedometer-outline" size={16} color="#00E5FF" />
-              <Text style={styles.sheetSectionTitle}>PLAYBACK SPEED</Text>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sheetPillsRow}>
-              {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
-                <TouchableOpacity
-                  key={`sheet-speed-${s}`}
-                  style={[styles.sheetPill, playbackSpeed === s && styles.sheetPillActive]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setPlaybackSpeed(s);
-                    try { if (player) player.playbackRate = s; } catch (e) {}
-                  }}
-                >
-                  <Text style={[styles.sheetPillText, playbackSpeed === s && styles.sheetPillTextActive]}>
-                    {s === 1.0 ? '1.0x Normal' : `${s}x`}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* 3. Audio Track / Language Dubbing */}
-          {availableLanguages.length > 0 && (
-            <View style={styles.sheetSection}>
-              <View style={styles.sheetRowHeader}>
-                <Ionicons name="volume-high-outline" size={16} color="#00FF88" />
-                <Text style={styles.sheetSectionTitle}>AUDIO DUB / LANGUAGE</Text>
-              </View>
-              <View style={styles.sheetPillsRow}>
-                {availableLanguages.map((lang) => (
-                  <TouchableOpacity
-                    key={`sheet-audio-${lang}`}
-                    style={[styles.sheetPill, selectedLanguage === lang && styles.sheetPillActive]}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      updatePlayerUrl(selectedServer, currentSeason, currentEpisode, lang);
-                    }}
-                  >
-                    <Text style={[styles.sheetPillText, selectedLanguage === lang && styles.sheetPillTextActive]}>
-                      🌐 {lang.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-          )}
-
-          {/* Done Button */}
-          <TouchableOpacity
-            style={styles.sheetDoneBtn}
-            onPress={() => setShowSettingsSheet(false)}
-          >
-            <Text style={styles.sheetDoneText}>DONE</Text>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </TouchableOpacity>
-    </Modal>
 
     {/* Double Back Exit Confirmation Toast */}
     {showExitToast && (
@@ -1641,12 +1765,18 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   landscapePlayerBox: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
     width: '100%',
-    aspectRatio: undefined,
+    height: '100%',
+    zIndex: 99999,
     backgroundColor: '#000000',
     overflow: 'hidden',
-    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   exitLandscapeBtn: {
     position: 'absolute',
@@ -2074,18 +2204,196 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
   },
-  cleanTopRightGroup: {
+  cleanIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Video.js Floating Settings Popover Menu (Images 3 & 4) Styles
+  vjsPopoverCard: {
+    position: 'absolute',
+    bottom: 58,
+    right: 14,
+    width: 200,
+    backgroundColor: 'rgba(25, 25, 32, 0.94)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    elevation: 16,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.7,
+    shadowRadius: 10,
+    zIndex: 10005,
+  },
+  vjsMenuList: {
+    gap: 2,
+  },
+  vjsMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  vjsMenuLeftGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  cleanIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
+  vjsMenuRightGroup: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
+  },
+  vjsMenuItemLabel: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  vjsMenuItemHint: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.55)',
+  },
+  vjsMenuBackHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+  },
+  vjsMenuBackTitle: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  vjsMenuSeparator: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginVertical: 4,
+  },
+  vjsRadioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  vjsRadioLabel: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.75)',
+  },
+  vjsRadioActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  // Video.js Modern Floating Glass Bar (vjs-control-bar) Styles
+  vjsFloatingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(18, 18, 24, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    paddingHorizontal: 8,
+    gap: 5,
+    marginHorizontal: 4,
+    marginBottom: 4,
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+  },
+  vjsBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vjsTimeText: {
+    fontFamily: 'Inter',
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '600',
+  },
+  vjsScrubberContainer: {
+    flex: 1,
+    height: 24,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  vjsScrubberTrack: {
+    height: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: 1.5,
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  vjsScrubberFill: {
+    height: 3,
+    backgroundColor: '#FF2D55',
+    borderRadius: 1.5,
+  },
+  vjsScrubberThumb: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#FF2D55',
+    marginLeft: -5,
+    top: -3.5,
+    elevation: 4,
+  },
+  // Double-Tap Ripple Feedback Badges
+  doubleTapBadgeLeft: {
+    position: 'absolute',
+    top: '40%',
+    left: '15%',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 10001,
+  },
+  doubleTapBadgeRight: {
+    position: 'absolute',
+    top: '40%',
+    right: '15%',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 10001,
+  },
+  doubleTapBadgeText: {
+    fontFamily: 'Inter',
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
   },
   cleanCenterControls: {
     flexDirection: 'row',
