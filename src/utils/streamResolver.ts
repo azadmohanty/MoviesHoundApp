@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveFzMoviesStream } from './fzmoviesResolver';
 import { resolveMovieBoxStream } from './movieboxResolver';
 import { resolveVegaMovies480pStream } from './vegamoviesResolver';
+import { resolveRogMovies480pStream } from './rogmoviesResolver';
 
 export type StreamResult = {
   streamUrl: string;
@@ -71,17 +72,21 @@ export const resolveStreamUrl = async (
   imdbId?: string
 ): Promise<StreamResult | null> => {
   try {
-    // Server 1: VEGAMOVIES 480P MKV STREAM
+    // Server 1: VEGAMOVIES / ROGMOVIES 480P MKV STREAM
     if (serverIndex === 1) {
       if (!title) return null;
 
       let liveVegaDomain = 'https://vegamovies.navy';
+      let liveRogDomain = 'https://rogmovies.rest';
       try {
         const cached = await AsyncStorage.getItem('@domains_cache');
         if (cached) {
           const { domains } = JSON.parse(cached);
           if (domains && domains.vegamovies) {
             liveVegaDomain = domains.vegamovies;
+          }
+          if (domains && domains.rogmovies) {
+            liveRogDomain = domains.rogmovies;
           }
         }
       } catch (e) {}
@@ -102,6 +107,25 @@ export const resolveStreamUrl = async (
           isDirectStream: true
         };
       }
+
+      // Bollywood / RogMovies fallback on Server 1
+      const rogStream = await resolveRogMovies480pStream(
+        title,
+        year,
+        imdbId,
+        mediaType,
+        season,
+        episode,
+        liveRogDomain
+      );
+      if (rogStream && rogStream.url && rogStream.url.startsWith('http')) {
+        return {
+          streamUrl: rogStream.url,
+          sourceName: rogStream.qualityLabel || 'ROGMOVIES 480P MKV',
+          isDirectStream: true
+        };
+      }
+
       return null;
     }
 

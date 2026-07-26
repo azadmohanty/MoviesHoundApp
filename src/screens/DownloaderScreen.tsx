@@ -25,12 +25,14 @@ import {
   getVegaMoviesQualityOptions,
   resolveVegaMoviesLocker,
   fetchVegaMoviesEpisodes,
+  resolveVegaMoviesUnlockedPage,
   SeriesEpisodeItem,
 } from '../utils/vegamoviesResolver';
 import {
   getRogMoviesQualityOptions,
   resolveRogMoviesLocker,
   fetchRogMoviesEpisodes,
+  resolveRogMoviesUnlockedPage,
 } from '../utils/rogmoviesResolver';
 import {
   getMoviesModQualityOptions,
@@ -362,11 +364,28 @@ export default function DownloaderScreen({
 
     const targetUrl = customUrl || item.targetUrl;
 
-    if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox' || targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
+    if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox') {
       if (action === 'download') {
         Linking.openURL(targetUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
         Alert.alert('Download Link', targetUrl);
+      }
+      return;
+    }
+
+    if (item.siteKey === 'vegamovies' || item.siteKey === 'rogmovies' || targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
+      setResolvingId(item.id);
+      addLog(`Unlocking VCloud server page for ${item.siteDisplayName}...`);
+      const unlockedUrl = item.siteKey === 'rogmovies'
+        ? await resolveRogMoviesUnlockedPage(targetUrl)
+        : await resolveVegaMoviesUnlockedPage(targetUrl);
+      setResolvingId(null);
+      if (action === 'download') {
+        triggerSuccessHaptic();
+        addLog('Unlocked VCloud page ready');
+        Linking.openURL(unlockedUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
+      } else {
+        Alert.alert('Unlocked VCloud Server Link', unlockedUrl);
       }
       return;
     }
@@ -380,9 +399,7 @@ export default function DownloaderScreen({
       qualityLabel: item.qualityLabel,
     };
 
-    if (item.siteKey === 'rogmovies') res = await resolveRogMoviesLocker(targetUrl, item.qualityLabel);
-    else if (item.siteKey === 'topmovies') res = await resolveTopMoviesLocker(targetUrl, item.qualityLabel);
-    else if (item.siteKey === 'vegamovies') res = await resolveVegaMoviesLocker(targetUrl, item.qualityLabel);
+    if (item.siteKey === 'topmovies') res = await resolveTopMoviesLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'moviesmod') res = await resolveMoviesModLocker(targetUrl, item.qualityLabel);
     else if (item.siteKey === 'bollyflix') res = await resolveBollyflixLocker(targetUrl, item.qualityLabel);
 

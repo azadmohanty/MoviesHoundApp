@@ -33,6 +33,18 @@ import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic, triggerS
 
 const { width } = Dimensions.get('window');
 
+function formatSecToTime(seconds: number): string {
+  if (!seconds || isNaN(seconds) || seconds < 0) return '00:00';
+  const totalSec = Math.floor(seconds);
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (hrs > 0) {
+    return `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
+  return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
 type VideoPlayerModalProps = {
   visible: boolean;
   videoUrl: string | null;
@@ -90,15 +102,36 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [playerMode, setPlayerMode] = useState<'FULL' | 'MINI' | 'LANDSCAPE'>('FULL');
   const [isPlayingState, setIsPlayingState] = useState(true);
 
-  // In-Player Custom Control Overlay States (Speed & Audio Track Menus)
+  // In-Player Custom Control Overlay & YouTube Settings Sheet States
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
-  const [showSpeedMenu, setShowSpeedMenu] = useState<boolean>(false);
-  const [showAudioMenu, setShowAudioMenu] = useState<boolean>(false);
+  const [showSettingsSheet, setShowSettingsSheet] = useState<boolean>(false);
+  const [ccEnabled, setCcEnabled] = useState<boolean>(false);
+  const [selectedQuality, setSelectedQuality] = useState<string>('480p');
+  const [showControls, setShowControls] = useState<boolean>(true);
+  const controlsTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  const resetControlsTimeout = () => {
+    setShowControls(true);
+    if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+    controlsTimeout.current = setTimeout(() => {
+      if (isPlayingState) {
+        setShowControls(false);
+      }
+    }, 3500);
+  };
+
+  const toggleControls = () => {
+    if (showControls) {
+      setShowControls(false);
+      if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+    } else {
+      resetControlsTimeout();
+    }
+  };
 
   const handleSelectSpeed = (speed: number) => {
     triggerSelectionHaptic();
     setPlaybackSpeed(speed);
-    setShowSpeedMenu(false);
     try {
       if (player) {
         player.playbackRate = speed;
@@ -111,21 +144,65 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   // WebView ref for audio stop injection on close
   const webviewRef = useRef<any>(null);
 
-  // Mini player swipe gesture: swipe UP → expand to FULL, swipe DOWN → close
+  // Floating Mini player Animated Position & PanResponder (YouTube PiP floating card style with edge snapping)
+  const miniPan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+
   const miniSwipeResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 10 && Math.abs(g.dy) > Math.abs(g.dx),
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3,
+      onPanResponderGrant: () => {
+        miniPan.extractOffset();
+      },
+      onPanResponderMove: Animated.event([null, { dx: miniPan.x, dy: miniPan.y }], { useNativeDriver: false }),
       onPanResponderRelease: (_, g) => {
-        if (g.dy < -30) {
-          // Swipe UP on mini player → expand back to FULL
+        miniPan.flattenOffset();
+        const screenW = Dimensions.get('window').width;
+        const screenH = Dimensions.get('window').height;
+
+        // 1. Dragged DOWN past threshold or fast downward swipe → Slide off screen and Close!
+        if (g.dy > 120 || (g.dy > 40 && g.vy > 0.5)) {
           triggerSelectionHaptic();
-          setPlayerMode('FULL');
-        } else if (g.dy > 30) {
-          // Swipe DOWN on mini player → close entirely
-          triggerSelectionHaptic();
-          handleClose();
+          Animated.timing(miniPan.y, {
+            toValue: 500,
+            duration: 220,
+            useNativeDriver: false,
+          }).start(() => {
+            miniPan.setValue({ x: 0, y: 0 });
+            handleClose();
+          });
+          return;
         }
+
+        // 2. Minimal movement (Tap) → Expand back to FULL screen!
+        if (Math.abs(g.dx) < 6 && Math.abs(g.dy) < 6) {
+          triggerSelectionHaptic();
+          Animated.spring(miniPan, {
+            toValue: { x: 0, y: 0 },
+            useNativeDriver: false,
+          }).start();
+          setPlayerMode('FULL');
+          return;
+        }
+
+        // 3. YouTube Edge/Corner Snapping Physics:
+        // Calculate nearest horizontal edge (Snap to Left or Right edge)
+        const leftLimitX = -(screenW - 210 - 28); // 210 = card width, 28 = margin
+        const snapX = g.dx < leftLimitX / 2 ? leftLimitX : 0;
+
+        // Calculate vertical bounds (top edge vs bottom edge)
+        const topLimitY = -(screenH - 118 - 140); // 118 = card height
+        let snapY = g.dy;
+        if (snapY < topLimitY) snapY = topLimitY;
+        if (snapY > 0) snapY = 0;
+
+        // Magnetic spring snapping animation to the screen edge
+        Animated.spring(miniPan, {
+          toValue: { x: snapX, y: snapY },
+          friction: 7,
+          tension: 40,
+          useNativeDriver: false,
+        }).start();
       },
     })
   ).current;
@@ -133,14 +210,14 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   // Full player swipe gesture: swipe DOWN → minimize to MINI popup
   const playerSwipeResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 15 && Math.abs(g.dy) > Math.abs(g.dx),
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponderCapture: (_, g) => g.dy > 20 && Math.abs(g.dy) > Math.abs(g.dx),
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 40 && playerMode === 'FULL' && activeUrl) {
-          // Swipe DOWN on full player → minimize to mini
+        if (g.dy > 30 && playerMode === 'FULL' && activeUrl) {
+          // Swipe DOWN on full player → minimize to floating mini card!
           triggerSelectionHaptic();
           setPlayerMode('MINI');
-        } else if (g.dy < -40 && playerMode === 'LANDSCAPE') {
+        } else if (g.dy < -30 && playerMode === 'LANDSCAPE') {
           // Swipe UP in landscape → back to portrait full
           triggerSelectionHaptic();
           setPlayerMode('FULL');
@@ -559,38 +636,20 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
   return (
     <>
-      <Modal visible={visible && playerMode !== 'MINI'} animationType="slide" transparent={false} onRequestClose={handleMinimize}>
+      <Modal
+        visible={visible && playerMode !== 'MINI'}
+        animationType="slide"
+        transparent={false}
+        supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
+        onRequestClose={handleMinimize}
+      >
         <StatusBar barStyle="light-content" backgroundColor="#0A0A0C" />
-        <SafeAreaView style={styles.container}>
-          {/* Top Header Bar */}
-          <View style={styles.topHeader}>
-            <TouchableOpacity onPress={handleMinimize} style={styles.closeButton}>
-              <Text style={styles.closeText}>✕</Text>
-            </TouchableOpacity>
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {title.toUpperCase()}
-            </Text>
-            <TouchableOpacity onPress={() => setShowLogs(!showLogs)} style={styles.logButton}>
-              <Text style={[styles.logButtonText, showLogs && { color: '#FFE500' }]}>
-                {showLogs ? '⚡ HIDE LOGS' : '⚡ LOGS'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* 16:9 YouTube-Style Top Player Container with Swipe Up/Down Gesture Support */}
+        <SafeAreaView
+          style={[styles.container, playerMode === 'LANDSCAPE' && styles.landscapeContainer]}
+          edges={playerMode === 'LANDSCAPE' ? [] : ['top', 'bottom']}
+        >
+          {/* Player Container: 16:9 in portrait, full screen in landscape */}
           <View style={[styles.topPlayerBox, playerMode === 'LANDSCAPE' && styles.landscapePlayerBox]} {...playerSwipeResponder.panHandlers}>
-          {playerMode === 'LANDSCAPE' && (
-            <TouchableOpacity
-              style={styles.exitLandscapeBtn}
-              onPress={() => {
-                triggerSelectionHaptic();
-                setPlayerMode('FULL');
-              }}
-            >
-              <Ionicons name="contract" size={16} color="#FFFFFF" />
-              <Text style={styles.exitLandscapeText}>PORTRAIT</Text>
-            </TouchableOpacity>
-          )}
           {loadingStream ? (
             <View style={styles.noPlayerBox}>
               <ActivityIndicator size="large" color="#FF2D55" />
@@ -605,79 +664,182 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                   fullscreenOptions={{ enable: true }}
                   allowsPictureInPicture
                   startsPictureInPictureAutomatically
-                  showsTimecodes
+                  nativeControls={false}
                 />
                 
-                {/* In-Player Overlay Custom Control Pills (Speed & Audio Language) */}
-                <View style={styles.inPlayerOverlayPills}>
-                  {/* Speed Pill */}
-                  <TouchableOpacity
-                    style={styles.playerControlPill}
-                    onPress={() => {
-                      triggerLightHaptic();
-                      setShowSpeedMenu(!showSpeedMenu);
-                      setShowAudioMenu(false);
-                    }}
-                  >
-                    <Ionicons name="speedometer-outline" size={12} color="#FFE500" />
-                    <Text style={styles.playerControlPillText}>{playbackSpeed.toFixed(2).replace(/\.00$/, '')}x</Text>
-                  </TouchableOpacity>
+                {/* 100% YouTube Screenshot 3 Clean Overlay */}
+                <TouchableOpacity
+                  activeOpacity={1}
+                  style={styles.cleanPlayerOverlay}
+                  onPress={toggleControls}
+                >
+                  {showControls && (
+                    <View style={styles.cleanControlsContainer}>
+                      {/* Top Control Bar: Back Arrow on Left, Gear & Fullscreen on Right */}
+                      <View style={styles.cleanTopControls}>
+                        <TouchableOpacity
+                          style={styles.cleanIconBtn}
+                          onPress={() => {
+                            triggerSelectionHaptic();
+                            handleMinimize();
+                          }}
+                        >
+                          <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
+                        </TouchableOpacity>
 
-                  {/* Audio Track Pill */}
-                  {availableLanguages.length > 0 && (
-                    <TouchableOpacity
-                      style={styles.playerControlPill}
-                      onPress={() => {
-                        triggerLightHaptic();
-                        setShowAudioMenu(!showAudioMenu);
-                        setShowSpeedMenu(false);
-                      }}
-                    >
-                      <Ionicons name="volume-high-outline" size={12} color="#00FF88" />
-                      <Text style={styles.playerControlPillText}>{selectedLanguage.toUpperCase()}</Text>
-                    </TouchableOpacity>
+                        <View style={styles.cleanTopRightGroup}>
+                          {/* Gear Settings Button */}
+                          <TouchableOpacity
+                            style={styles.cleanIconBtn}
+                            onPress={() => {
+                              triggerLightHaptic();
+                              setShowSettingsSheet(true);
+                            }}
+                          >
+                            <Ionicons name="settings-sharp" size={18} color="#FFFFFF" />
+                          </TouchableOpacity>
+
+                          {/* Fullscreen / Rotate Button */}
+                          <TouchableOpacity
+                            style={styles.cleanIconBtn}
+                            onPress={() => {
+                              triggerSelectionHaptic();
+                              setPlayerMode((prev) => (prev === 'LANDSCAPE' ? 'FULL' : 'LANDSCAPE'));
+                            }}
+                          >
+                            <Ionicons name={playerMode === 'LANDSCAPE' ? 'contract-outline' : 'scan-outline'} size={18} color="#FFFFFF" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
+                      {/* Center Control Group: 3 Clean Translucent Dark Circles (↺10  ⏯  ↻10) */}
+                      <View style={styles.cleanCenterControls}>
+                        {/* Seek Rewind 10s */}
+                        <TouchableOpacity
+                          style={styles.cleanCircleBtnSecondary}
+                          onPress={() => {
+                            triggerLightHaptic();
+                            resetControlsTimeout();
+                            try {
+                              if (player) player.currentTime = Math.max(0, (player.currentTime || 0) - 10);
+                            } catch (e) {}
+                          }}
+                        >
+                          <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />
+                        </TouchableOpacity>
+
+                        {/* Main Play / Pause Circle */}
+                        <TouchableOpacity
+                          style={styles.cleanCircleBtnPrimary}
+                          onPress={() => {
+                            triggerSelectionHaptic();
+                            resetControlsTimeout();
+                            if (isPlayingState) {
+                              try { player.pause(); } catch (e) {}
+                              setIsPlayingState(false);
+                            } else {
+                              try { player.play(); } catch (e) {}
+                              setIsPlayingState(true);
+                            }
+                          }}
+                        >
+                          <Ionicons
+                            name={isPlayingState ? 'pause' : 'play'}
+                            size={28}
+                            color="#FFFFFF"
+                            style={!isPlayingState ? { marginLeft: 3 } : undefined}
+                          />
+                        </TouchableOpacity>
+
+                        {/* Seek Fast-Forward 10s */}
+                        <TouchableOpacity
+                          style={styles.cleanCircleBtnSecondary}
+                          onPress={() => {
+                            triggerLightHaptic();
+                            resetControlsTimeout();
+                            try {
+                              if (player) player.currentTime = Math.min(player.duration || 0, (player.currentTime || 0) + 10);
+                            } catch (e) {}
+                          }}
+                        >
+                          <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Bottom Control Bar: Timestamps, Interactive Scrubber Bar & CC Toggle */}
+                      <View style={styles.cleanBottomControls}>
+                        <Text style={styles.cleanTimeText}>
+                          {formatSecToTime(player?.currentTime || 0)}
+                        </Text>
+                        
+                        {/* Interactive Scrubber Bar */}
+                        <TouchableOpacity
+                          activeOpacity={1}
+                          style={styles.cleanScrubberContainer}
+                          onPress={(evt) => {
+                            const { locationX } = evt.nativeEvent;
+                            const containerWidth = width - 130;
+                            const duration = player?.duration || 0;
+                            if (duration > 0 && containerWidth > 0) {
+                              const seekRatio = Math.max(0, Math.min(1, locationX / containerWidth));
+                              const targetTime = seekRatio * duration;
+                              try {
+                                if (player) player.currentTime = targetTime;
+                              } catch (e) {}
+                            }
+                          }}
+                        >
+                          <View style={styles.cleanScrubberTrack}>
+                            <View
+                              style={[
+                                styles.cleanScrubberFill,
+                                {
+                                  width: `${Math.min(
+                                    100,
+                                    Math.max(
+                                      0,
+                                      ((player?.currentTime || 0) / (player?.duration || 1)) * 100
+                                    )
+                                  )}%`,
+                                },
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.cleanScrubberThumb,
+                                {
+                                  left: `${Math.min(
+                                    100,
+                                    Math.max(
+                                      0,
+                                      ((player?.currentTime || 0) / (player?.duration || 1)) * 100
+                                    )
+                                  )}%`,
+                                },
+                              ]}
+                            />
+                          </View>
+                        </TouchableOpacity>
+
+                        <Text style={styles.cleanTimeText}>
+                          {formatSecToTime(player?.duration || 0)}
+                        </Text>
+
+                        {/* CC Toggle */}
+                        <TouchableOpacity
+                          style={[styles.cleanIconBtn, ccEnabled && { backgroundColor: 'rgba(255, 45, 85, 0.4)' }]}
+                          onPress={() => {
+                            triggerSelectionHaptic();
+                            resetControlsTimeout();
+                            setCcEnabled(!ccEnabled);
+                          }}
+                        >
+                          <Ionicons name="chatbox-ellipses-outline" size={16} color={ccEnabled ? '#FF2D55' : '#FFFFFF'} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
                   )}
-                </View>
-
-                {/* Speed Popover Menu */}
-                {showSpeedMenu && (
-                  <View style={styles.inPlayerPopoverMenu}>
-                    <Text style={styles.popoverHeaderTitle}>PLAYBACK SPEED</Text>
-                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
-                      <TouchableOpacity
-                        key={`speed-${s}`}
-                        style={[styles.popoverMenuItem, playbackSpeed === s && styles.popoverMenuItemActive]}
-                        onPress={() => handleSelectSpeed(s)}
-                      >
-                        <Text style={[styles.popoverMenuItemText, playbackSpeed === s && { color: '#0A0A0C', fontWeight: 'bold' }]}>
-                          {s === 1.0 ? 'Normal (1.0x)' : `${s}x`}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {/* Audio Dub Popover Menu */}
-                {showAudioMenu && availableLanguages.length > 0 && (
-                  <View style={styles.inPlayerPopoverMenu}>
-                    <Text style={styles.popoverHeaderTitle}>AUDIO DUB / LANGUAGE</Text>
-                    {availableLanguages.map((lang) => (
-                      <TouchableOpacity
-                        key={`audio-${lang}`}
-                        style={[styles.popoverMenuItem, selectedLanguage === lang && styles.popoverMenuItemActive]}
-                        onPress={() => {
-                          triggerSelectionHaptic();
-                          setShowAudioMenu(false);
-                          updatePlayerUrl(selectedServer, currentSeason, currentEpisode, lang);
-                        }}
-                      >
-                        <Text style={[styles.popoverMenuItemText, selectedLanguage === lang && { color: '#0A0A0C', fontWeight: 'bold' }]}>
-                          🌐 {lang.toUpperCase()}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
+                </TouchableOpacity>
               </View>
             ) : isWebViewUrl ? (
               <WebView
@@ -786,8 +948,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           )}
         </View>
 
-        {/* Scrollable Details Below Video Player */}
-        <ScrollView contentContainerStyle={styles.scrollDetailsContent} showsVerticalScrollIndicator={false}>
+        {/* Scrollable Details Below Video Player (Only rendered in Portrait mode) */}
+        {playerMode !== 'LANDSCAPE' && (
+          <ScrollView contentContainerStyle={styles.scrollDetailsContent} showsVerticalScrollIndicator={false}>
           {mediaItem && (
             <>
               <Text style={styles.mediaTitle}>{mediaItem.title.toUpperCase()}</Text>
@@ -1118,78 +1281,188 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </>
           )}
         </ScrollView>
+        )}
       </SafeAreaView>
     </Modal>
 
-    {/* YouTube-Style Bottom Mini Player Bar */}
+    {/* YouTube-Style Floating PiP Card Mini Player */}
     {visible && playerMode === 'MINI' && activeUrl && (
       <Animated.View
-        style={styles.miniPlayerContainer}
+        style={[
+          styles.floatingMiniPlayerCard,
+          {
+            transform: [
+              { translateX: miniPan.x },
+              { translateY: miniPan.y }
+            ]
+          }
+        ]}
         {...miniSwipeResponder.panHandlers}
       >
-        {/* Thin red progress bar on top edge (YouTube style) */}
-        <View style={styles.miniProgressBar} />
+        <View style={styles.floatingVideoWrapper}>
+          {isDirectVideoFile ? (
+            <VideoView style={{ flex: 1 }} player={player} nativeControls={false} contentFit="cover" />
+          ) : isWebViewUrl ? (
+            <WebView
+              key={`mini-${activeUrl}`}
+              source={{ uri: activeUrl }}
+              style={{ flex: 1 }}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              allowsInlineMediaPlayback={true}
+              mediaPlaybackRequiresUserAction={false}
+              injectedJavaScript={blockAdsJS}
+            />
+          ) : (
+            <View style={styles.miniPlaceholderWrapper}>
+              <Ionicons name="film-outline" size={28} color="#FF2D55" />
+            </View>
+          )}
 
-        <View style={styles.miniPlayerInner}>
-          {/* Thumbnail / Video Preview */}
-          <TouchableOpacity
-            style={styles.miniVideoBox}
-            activeOpacity={0.9}
-            onPress={() => { triggerSelectionHaptic(); setPlayerMode('FULL'); }}
-          >
-            {isDirectVideoFile ? (
-              <VideoView style={{ flex: 1, borderRadius: 4 }} player={player} />
-            ) : (
-              <View style={[styles.miniVideoBox, { backgroundColor: '#1A1A22', justifyContent: 'center', alignItems: 'center' }]}>
-                <Ionicons name="play-circle" size={28} color="#FF2D55" />
-              </View>
-            )}
-            {/* Play overlay icon on thumbnail */}
-            {isDirectVideoFile && (
-              <View style={styles.miniPlayOverlay} pointerEvents="none">
-                <Ionicons name={isPlayingState ? 'pause' : 'play'} size={18} color="rgba(255,255,255,0.8)" />
-              </View>
-            )}
-          </TouchableOpacity>
+          {/* Floating Control Overlay: Play/Pause Circular Button (Top-Left Corner), Close (X) Circular Button (Top-Right Corner) */}
+          <View style={styles.floatingControlOverlay} pointerEvents="box-none">
+            {/* Play / Pause Circular Button (Top-Left Corner) */}
+            <TouchableOpacity
+              style={styles.floatingPlayBtn}
+              activeOpacity={0.8}
+              onPress={() => {
+                triggerSelectionHaptic();
+                if (isPlayingState) {
+                  try { player.pause(); } catch (e) {}
+                  setIsPlayingState(false);
+                } else {
+                  try { player.play(); } catch (e) {}
+                  setIsPlayingState(true);
+                }
+              }}
+            >
+              <Ionicons
+                name={isPlayingState ? 'pause' : 'play'}
+                size={16}
+                color="#FFFFFF"
+                style={!isPlayingState ? { marginLeft: 1 } : undefined}
+              />
+            </TouchableOpacity>
 
-          {/* Title & subtitle — tap to expand */}
-          <TouchableOpacity
-            style={styles.miniInfoBox}
-            activeOpacity={0.85}
-            onPress={() => { triggerSelectionHaptic(); setPlayerMode('FULL'); }}
-          >
-            <Text style={styles.miniTitle} numberOfLines={1}>
-              {(title || mediaItem?.title || 'NOW PLAYING').toUpperCase()}
-            </Text>
-            <Text style={styles.miniSubTitle} numberOfLines={1}>
-              {loadingStream ? 'RESOLVING...' : selectedServer ? `SERVER ${selectedServer}` : 'STREAMING'}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Play / Pause button */}
-          <TouchableOpacity
-            style={styles.miniControlBtn}
-            onPress={() => {
-              triggerSelectionHaptic();
-              if (isPlayingState) {
-                try { player.pause(); } catch (e) {}
-                setIsPlayingState(false);
-              } else {
-                try { player.play(); } catch (e) {}
-                setIsPlayingState(true);
-              }
-            }}
-          >
-            <Ionicons name={isPlayingState ? 'pause' : 'play'} size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-
-          {/* Close button */}
-          <TouchableOpacity style={styles.miniControlBtn} onPress={handleClose}>
-            <Ionicons name="close" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
+            {/* Exit (X) Circular Button (Top-Right Corner) */}
+            <TouchableOpacity
+              style={styles.floatingCloseBtn}
+              activeOpacity={0.8}
+              onPress={() => {
+                triggerSelectionHaptic();
+                handleClose();
+              }}
+            >
+              <Ionicons name="close" size={16} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
         </View>
       </Animated.View>
     )}
+
+    {/* YouTube-Style Settings Bottom Sheet Modal */}
+    <Modal
+      visible={showSettingsSheet}
+      transparent={true}
+      animationType="slide"
+      onRequestClose={() => setShowSettingsSheet(false)}
+    >
+      <TouchableOpacity
+        style={styles.settingsBackdrop}
+        activeOpacity={1}
+        onPress={() => setShowSettingsSheet(false)}
+      >
+        <TouchableOpacity style={styles.settingsSheetCard} activeOpacity={1}>
+          {/* Sheet Handle Bar */}
+          <View style={styles.sheetHandleBar} />
+
+          <Text style={styles.sheetHeaderTitle}>PLAYBACK SETTINGS</Text>
+
+          {/* 1. Quality Selection (480p / 720p Max) */}
+          <View style={styles.sheetSection}>
+            <View style={styles.sheetRowHeader}>
+              <Ionicons name="options-outline" size={16} color="#FFE500" />
+              <Text style={styles.sheetSectionTitle}>STREAM QUALITY (MAX 720P)</Text>
+            </View>
+            <View style={styles.sheetPillsRow}>
+              {['480p', '720p'].map((q) => (
+                <TouchableOpacity
+                  key={`quality-${q}`}
+                  style={[styles.sheetPill, selectedQuality === q && styles.sheetPillActive]}
+                  onPress={() => {
+                    triggerSelectionHaptic();
+                    setSelectedQuality(q);
+                  }}
+                >
+                  <Text style={[styles.sheetPillText, selectedQuality === q && styles.sheetPillTextActive]}>
+                    {q === '480p' ? '480p (FAST MOBILE)' : '720p (HD MAX)'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* 2. Playback Speed */}
+          <View style={styles.sheetSection}>
+            <View style={styles.sheetRowHeader}>
+              <Ionicons name="speedometer-outline" size={16} color="#00E5FF" />
+              <Text style={styles.sheetSectionTitle}>PLAYBACK SPEED</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sheetPillsRow}>
+              {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
+                <TouchableOpacity
+                  key={`sheet-speed-${s}`}
+                  style={[styles.sheetPill, playbackSpeed === s && styles.sheetPillActive]}
+                  onPress={() => {
+                    triggerSelectionHaptic();
+                    setPlaybackSpeed(s);
+                    try { if (player) player.playbackRate = s; } catch (e) {}
+                  }}
+                >
+                  <Text style={[styles.sheetPillText, playbackSpeed === s && styles.sheetPillTextActive]}>
+                    {s === 1.0 ? '1.0x Normal' : `${s}x`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* 3. Audio Track / Language Dubbing */}
+          {availableLanguages.length > 0 && (
+            <View style={styles.sheetSection}>
+              <View style={styles.sheetRowHeader}>
+                <Ionicons name="volume-high-outline" size={16} color="#00FF88" />
+                <Text style={styles.sheetSectionTitle}>AUDIO DUB / LANGUAGE</Text>
+              </View>
+              <View style={styles.sheetPillsRow}>
+                {availableLanguages.map((lang) => (
+                  <TouchableOpacity
+                    key={`sheet-audio-${lang}`}
+                    style={[styles.sheetPill, selectedLanguage === lang && styles.sheetPillActive]}
+                    onPress={() => {
+                      triggerSelectionHaptic();
+                      updatePlayerUrl(selectedServer, currentSeason, currentEpisode, lang);
+                    }}
+                  >
+                    <Text style={[styles.sheetPillText, selectedLanguage === lang && styles.sheetPillTextActive]}>
+                      🌐 {lang.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Done Button */}
+          <TouchableOpacity
+            style={styles.sheetDoneBtn}
+            onPress={() => setShowSettingsSheet(false)}
+          >
+            <Text style={styles.sheetDoneText}>DONE</Text>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
 
     {/* Double Back Exit Confirmation Toast */}
     {showExitToast && (
@@ -1202,54 +1475,64 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 };
 
 const styles = StyleSheet.create({
-  // YouTube-style full-width bottom mini player bar
-  miniPlayerContainer: {
+  // YouTube-Style Floating PiP Card Mini Player Styles
+  floatingMiniPlayerCard: {
     position: 'absolute',
-    bottom: 56, // just above bottom tabs
-    left: 0,
-    right: 0,
-    height: 68,
-    backgroundColor: '#121214',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
-    elevation: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.6,
-    shadowRadius: 8,
-    zIndex: 9999,
-  },
-  miniProgressBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: '35%', // simulated static progress bar for aesthetics
-    height: 2,
-    backgroundColor: '#FF2D55',
-    borderRadius: 1,
-  },
-  miniPlayerInner: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingTop: 4,
-    gap: 10,
-  },
-  miniVideoBox: {
-    width: 108,
-    height: 54,
-    borderRadius: 4,
+    bottom: 72,
+    right: 14,
+    width: 210,
+    height: 118,
+    borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#000000',
+    backgroundColor: '#0A0A0C',
+    elevation: 20,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.7,
+    shadowRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    zIndex: 99999,
+  },
+  floatingVideoWrapper: {
+    width: '100%',
+    height: '100%',
     position: 'relative',
   },
-  miniPlayOverlay: {
+  miniPlaceholderWrapper: {
+    flex: 1,
+    backgroundColor: '#121216',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  floatingControlOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  floatingPlayBtn: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
+    top: 8,
+    left: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  floatingCloseBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   miniInfoBox: {
     flex: 1,
@@ -1300,6 +1583,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0C',
   },
+  landscapeContainer: {
+    flex: 1,
+    backgroundColor: '#000000',
+    padding: 0,
+    margin: 0,
+  },
   topHeader: {
     height: 48,
     flexDirection: 'row',
@@ -1348,21 +1637,16 @@ const styles = StyleSheet.create({
     width: '100%',
     aspectRatio: 16 / 9,
     backgroundColor: '#000000',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    overflow: 'hidden',
     position: 'relative',
   },
   landscapePlayerBox: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    flex: 1,
     width: '100%',
-    height: '100%',
     aspectRatio: undefined,
-    zIndex: 99999,
     backgroundColor: '#000000',
+    overflow: 'hidden',
+    position: 'relative',
   },
   exitLandscapeBtn: {
     position: 'absolute',
@@ -1771,6 +2055,105 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  // Screenshot 3 YouTube Clean Overlay Styles
+  cleanPlayerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    justifyContent: 'space-between',
+    zIndex: 10000,
+  },
+  cleanControlsContainer: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    justifyContent: 'space-between',
+  },
+  cleanTopControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  cleanTopRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  cleanIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cleanCenterControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 24,
+  },
+  cleanCircleBtnPrimary: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  cleanCircleBtnSecondary: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  cleanBottomControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 4,
+    gap: 6,
+  },
+  cleanTimeText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  cleanScrubberContainer: {
+    flex: 1,
+    height: 24,
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  cleanScrubberTrack: {
+    height: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderRadius: 1.5,
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  cleanScrubberFill: {
+    height: 3,
+    backgroundColor: '#FF2D55',
+    borderRadius: 1.5,
+  },
+  cleanScrubberThumb: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#FF2D55',
+    marginLeft: -6,
+    top: -4.5,
+    elevation: 4,
+  },
   streamNowOverlayButton: {
     width: 60,
     height: 60,
@@ -1891,5 +2274,95 @@ const styles = StyleSheet.create({
   },
   particleHeart: {
     position: 'absolute',
+  },
+  // YouTube Settings Bottom Sheet Styles
+  settingsBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'flex-end',
+  },
+  settingsSheetCard: {
+    backgroundColor: '#121216',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.12)',
+    elevation: 24,
+  },
+  sheetHandleBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  sheetHeaderTitle: {
+    fontFamily: 'Inter',
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    letterSpacing: 0.8,
+    marginBottom: 16,
+  },
+  sheetSection: {
+    marginBottom: 16,
+  },
+  sheetRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  sheetSectionTitle: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  sheetPillsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  sheetPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  sheetPillActive: {
+    backgroundColor: '#FF2D55',
+    borderColor: '#FF2D55',
+  },
+  sheetPillText: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  sheetPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  sheetDoneBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  sheetDoneText: {
+    fontFamily: 'Inter',
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    letterSpacing: 1,
   },
 });

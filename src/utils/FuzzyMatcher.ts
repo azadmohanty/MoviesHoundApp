@@ -100,24 +100,23 @@ export function calculateMatchConfidence(
 }
 
 /**
- * Sanitizes a title string for site search queries (extracts core title, removes year, colons, special punctuation).
+ * Sanitizes a title string for site search queries.
+ * Replaces hyphens, colons, and special characters with spaces so titles like "Spider-Man: No Way Home"
+ * become "Spider Man No Way Home", preserving specificity without API search syntax breakage.
  */
 export function sanitizeSearchQuery(query: string): string {
   if (!query) return '';
 
-  let clean = query;
-  // If title has a colon, dash, or pipe subtitle separator (e.g. "Dhurandhar: The Revenge"),
-  // extract primary core title part ("Dhurandhar") for maximum site search engine hits!
-  if (/[:\-\—|]/.test(clean)) {
-    const primaryPart = clean.split(/[:\-\—|]/)[0].trim();
-    if (primaryPart.length >= 3) {
-      clean = primaryPart;
-    }
-  }
-
-  return clean
+  const clean = query
     .replace(/\b(19|20)\d{2}\b/g, '') // Remove year numbers
-    .replace(/[^a-zA-Z0-9\s]/g, ' ')  // Replace special chars with space
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')  // Replace special chars/hyphens/colons with space
     .replace(/\s+/g, ' ')
     .trim();
+
+  const words = clean.split(' ');
+  if (words.length > 6) {
+    return words.slice(0, 6).join(' ');
+  }
+
+  return clean;
 }

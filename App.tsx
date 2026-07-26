@@ -2,12 +2,15 @@ import React, { useEffect } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFonts } from 'expo-font';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import AppNavigator from './src/navigation/AppNavigator';
 import { initSafeAreaCache } from './src/utils/SafeAreaCache';
 
 export default function App() {
   useEffect(() => {
     initSafeAreaCache();
+    // Lock entire app to portrait. VideoPlayerModal unlocks to landscape when fullscreen is active.
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
   }, []);
   const [fontsLoaded] = useFonts({
     'Ndot55': require('./assets/fonts/Ndot55-Regular.otf'),

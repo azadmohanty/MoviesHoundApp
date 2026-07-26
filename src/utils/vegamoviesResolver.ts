@@ -506,6 +506,56 @@ export async function resolveVegaMoviesLocker(
 }
 
 /**
+ * Helper to decode raw vcloud URL into unlocked tokenized page URL.
+ */
+async function decodeVcloudTokenPage(vcloudUrl: string): Promise<string> {
+  try {
+    const vres = await fetch(vcloudUrl, { headers: { 'User-Agent': UA } });
+    const vhtml = await vres.text();
+    const atobMatch = vhtml.match(/atob\(atob\(['"]([^'"]+)['"]\)\)/i) || vhtml.match(/atob\(['"]([^'"]+)['"]\)/i);
+    if (atobMatch) {
+      const decoded = b64decode(atobMatch[1]);
+      if (decoded && decoded.startsWith('http')) {
+        return decoded;
+      }
+    }
+  } catch (e) {}
+  return vcloudUrl;
+}
+
+/**
+ * Takes a NexDrive or VCloud URL, decodes the token, and returns the UNLOCKED VCloud server choice page URL (?token=...).
+ * Used for Downloader screen so users land straight on the server list with 0 countdown timer!
+ */
+export async function resolveVegaMoviesUnlockedPage(targetUrl: string): Promise<string> {
+  try {
+    if (targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
+      return await decodeVcloudTokenPage(targetUrl);
+    }
+
+    const res = await fetch(targetUrl, {
+      headers: { 'User-Agent': UA, 'Referer': BASE_DOMAIN + '/' },
+    });
+    const html = await res.text();
+
+    const lockerLinks = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    for (const l of lockerLinks) {
+      let href = l[1];
+      if (href.includes('url=')) {
+        try {
+          const b64 = href.split('url=')[1].split('&')[0];
+          href = b64decode(b64);
+        } catch (e) {}
+      }
+      if (href.includes('vcloud') || href.includes('v-cloud')) {
+        return await decodeVcloudTokenPage(href);
+      }
+    }
+  } catch (e) {}
+  return targetUrl;
+}
+
+/**
  * Dedicated VCloud Token Page Resolver.
  * Receives a vcloud.zip/... URL, decodes the atob(atob(...)) token, and extracts
  * the direct Cloudflare R2 .mkv stream URL from the FSLv2 download button.
@@ -642,7 +692,9 @@ export async function resolveVegaMovies480pStream(
         }
       }
     } else {
-      const option480p = pool.find((o) => o.qualityLabel === '480p') || pool[0];
+      const option480p = pool.find((o) => o.qualityLabel === '480p') ||
+                         pool.find((o) => o.qualityLabel === '720p') ||
+                         pool[0];
       const resolved = await resolveVegaMoviesLocker(option480p.targetUrl, option480p.qualityLabel || '480p');
       if (resolved && resolved.success && isStreamableVideoUrl(resolved.streamUrl)) {
         return {

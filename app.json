@@ -4,11 +4,12 @@
     "slug": "hologram",
     "scheme": "hologram",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "requireFullScreen": false
     },
     "android": {
       "package": "com.hologram.app",
@@ -23,7 +24,8 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-video"
+      "expo-video",
+      "expo-screen-orientation"
     ],
     "extra": {
       "eas": {
