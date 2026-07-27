@@ -43,6 +43,7 @@ jobs:
           EXPO_UPDATES_CHANNEL: main
         run: |
           npx expo prebuild --platform android --no-install
+          sed -i 's|</application>|<meta-data android:name="expo.modules.updates.EXPO_CHANNEL_NAME" android:value="main"/><meta-data android:name="expo.modules.updates.EXPO_RELEASE_CHANNEL" android:value="main"/></application>|' android/app/src/main/AndroidManifest.xml
           echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
 
       - name: Cache Gradle Packages

@@ -25,7 +25,13 @@
     },
     "plugins": [
       "expo-video",
-      "expo-screen-orientation"
+      "expo-screen-orientation",
+      [
+        "expo-updates",
+        {
+          "username": "azadmohanty"
+        }
+      ]
     ],
     "extra": {
       "eas": {
