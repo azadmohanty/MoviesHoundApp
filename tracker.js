@@ -19,6 +19,35 @@ function extractDomainFromHtml(html) {
   return null;
 }
 
+async function resolveKickAssAnime() {
+  const hubUrl = 'https://kickassanime.cx';
+  const candidates = new Set(['https://kickassanime.cx', 'https://kaa.lt', 'https://kaa.rs']);
+
+  try {
+    const res = await fetch(hubUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const matches = [...html.matchAll(/https?:\/\/(?:www\.)?(?:kickass-?anime|kaa)\.[a-zA-Z]{2,4}/gi)].map(m => m[0]);
+      matches.forEach(m => candidates.add(m));
+    }
+  } catch (e) {
+    console.warn('Could not fetch KickAssAnime hub:', e.message);
+  }
+
+  for (const domain of candidates) {
+    try {
+      const res = await fetch(domain, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (res && res.status < 400) {
+        console.log(`Resolved kickassanime -> ${domain}`);
+        return domain;
+      }
+    } catch (_) {}
+  }
+  return 'https://kickassanime.cx';
+}
+
 async function resolveVidSrc() {
   const mirrors = [
     'https://vidsrc2.ru',
@@ -79,6 +108,12 @@ async function main() {
       console.log(`Keeping existing domain for ${key} -> ${domains[key]}`);
     }
   }
+
+  // KickAssAnime resolution
+  domains['kickassanime'] = await resolveKickAssAnime();
+  domains['animedekho'] = 'https://animedekho.com';
+  domains['kisskh'] = 'https://kisskh.co';
+  domains['wcofun'] = 'https://www.wcofun.org';
 
   const vidsrcResolved = await resolveVidSrc();
   if (vidsrcResolved) {

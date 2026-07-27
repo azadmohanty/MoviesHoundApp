@@ -33,7 +33,12 @@ export const HARDCODED_FALLBACKS: Record<string, string> = {
   vidsrc: 'https://vidsrc2.ru',
   superembed: 'https://multiembed.mov',
   vidsrcto: 'https://vidsrc.to',
-  anyembed: 'https://anyembed.xyz'
+  anyembed: 'https://anyembed.xyz',
+  kickassanime: 'https://kickassanime.cx'
+};
+
+export const getResolvedDomainKey = (key: string, defaultDomain: string): string => {
+  return HARDCODED_FALLBACKS[key] || defaultDomain;
 };
 
 export const resolveAllDomains = async (

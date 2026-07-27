@@ -3,6 +3,7 @@ import { resolveFzMoviesStream } from './fzmoviesResolver';
 import { resolveMovieBoxStream } from './movieboxResolver';
 import { resolveVegaMovies480pStream } from './vegamoviesResolver';
 import { resolveRogMovies480pStream } from './rogmoviesResolver';
+import { searchKickAssAnime, loadKickAssAnimeEpisodes, resolveKickAssAnimeStream } from './kickassanimeResolver';
 
 export type StreamResult = {
   streamUrl: string;
@@ -72,6 +73,30 @@ export const resolveStreamUrl = async (
   imdbId?: string
 ): Promise<StreamResult | null> => {
   try {
+    // Anime Media Handling: Priority KickAssAnime HLS Resolution
+    if (mediaType === 'anime' && title) {
+      try {
+        const kaaResults = await searchKickAssAnime(title);
+        if (kaaResults.length > 0) {
+          const topAnime = kaaResults[0];
+          const episodes = await loadKickAssAnimeEpisodes(topAnime.slug);
+          const targetEp = episodes.find(e => e.episodeNumber === episode) || episodes[0];
+          if (targetEp) {
+            const kaaStream = await resolveKickAssAnimeStream(targetEp.url);
+            if (kaaStream && kaaStream.streamUrl) {
+              return {
+                streamUrl: kaaStream.streamUrl,
+                sourceName: `KICKASSANIME (${kaaStream.qualityLabel || '720p'} HLS)`,
+                isDirectStream: true
+              };
+            }
+          }
+        }
+      } catch (kaaErr) {
+        console.warn('[KickAssAnime] Stream resolution fallback:', kaaErr);
+      }
+    }
+
     // Server 1: VEGAMOVIES / ROGMOVIES 480P MKV STREAM
     if (serverIndex === 1) {
       if (!title) return null;

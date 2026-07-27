@@ -1,0 +1,33 @@
+name: 6-Hour Automated Domain Health Check
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-domains:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Domain Health Check
+        run: node scripts/check-domains.js
+
+      - name: Commit and Push if domains.json changed
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/utils/domains.json
+          if ! git diff --cached --exit-code; then
+            git commit -m "chore: auto-update domains.json via 6-hour health check"
+            git push
+          else
+            echo "No domain changes detected."
+          fi
