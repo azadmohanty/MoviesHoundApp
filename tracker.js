@@ -19,9 +19,14 @@ function extractDomainFromHtml(html) {
   return null;
 }
 
+/**
+ * Resolves active streaming mirror for KickAssAnime.
+ * Scrapes landing hub https://kickassanime.cx for actual streaming domains (e.g. https://kaa.lt, kaa.to),
+ * and verifies that the search engine endpoint (/search?q=test) returns HTTP 200.
+ */
 async function resolveKickAssAnime() {
   const hubUrl = 'https://kickassanime.cx';
-  const candidates = new Set(['https://kickassanime.cx', 'https://kaa.lt', 'https://kaa.rs']);
+  const candidates = new Set(['https://kaa.lt', 'https://kaa.to', 'https://kaa.rs', 'https://kaa.si']);
 
   try {
     const res = await fetch(hubUrl, {
@@ -29,23 +34,31 @@ async function resolveKickAssAnime() {
     });
     if (res.ok) {
       const html = await res.text();
+      // Extract links like https://kaa.lt or kaa.to from hub HTML text
       const matches = [...html.matchAll(/https?:\/\/(?:www\.)?(?:kickass-?anime|kaa)\.[a-zA-Z]{2,4}/gi)].map(m => m[0]);
-      matches.forEach(m => candidates.add(m));
+      matches.forEach(m => {
+        if (!m.includes('kickassanime.cx')) candidates.add(m);
+      });
     }
   } catch (e) {
     console.warn('Could not fetch KickAssAnime hub:', e.message);
   }
 
+  // Ping candidate streaming search endpoints
   for (const domain of candidates) {
     try {
-      const res = await fetch(domain, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
-      if (res && res.status < 400) {
-        console.log(`Resolved kickassanime -> ${domain}`);
+      const testUrl = `${domain}/search?q=test`;
+      const res = await fetch(testUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      if (res && res.status === 200) {
+        console.log(`Resolved kickassanime streaming engine -> ${domain}`);
         return domain;
       }
     } catch (_) {}
   }
-  return 'https://kickassanime.cx';
+
+  return 'https://kaa.lt';
 }
 
 async function resolveVidSrc() {
@@ -109,7 +122,7 @@ async function main() {
     }
   }
 
-  // KickAssAnime resolution
+  // KickAssAnime streaming engine resolution
   domains['kickassanime'] = await resolveKickAssAnime();
   domains['animedekho'] = 'https://animedekho.com';
   domains['kisskh'] = 'https://kisskh.co';

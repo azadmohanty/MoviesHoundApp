@@ -11,7 +11,7 @@ import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from '.
 import { findFuzzyTitleMatches, sanitizeSearchQuery } from './FuzzyMatcher';
 import { getResolvedDomainKey } from './resolver';
 
-const DEFAULT_BASE_DOMAIN = 'https://kickassanime.cx';
+const DEFAULT_BASE_DOMAIN = 'https://kaa.lt';
 const KAAST_BASE = 'https://kaast1.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
