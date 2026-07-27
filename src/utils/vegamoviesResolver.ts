@@ -138,11 +138,12 @@ export async function getVegaMoviesQualityOptions(
   baseDomain: string = 'https://vegamovies.navy',
   siteDisplayName: string = 'VEGAMOVIES',
   signal?: AbortSignal,
-  onLog?: (msg: string) => void
+  onLog?: (msg: string) => void,
+  seasonNum?: number
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = sanitizeSearchQuery(queryTitle);
+  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
   const searchUrl = `${baseDomain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
-
   if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
 
   let hits: any[] = [];
@@ -164,13 +165,12 @@ export async function getVegaMoviesQualityOptions(
   if (onLog) onLog(`VegaMovies: ${hits.length} raw search hits found. Pre-filtering...`);
 
   const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
-  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
 
   // Step 1: Pre-filter by media type & title score
   let candidateHits = hits.filter((hit: any) => {
     const postTitle = hit.document?.post_title || '';
     const score = calculateMatchConfidence(queryTitle, postTitle, targetYear);
-    if (score < 50) return false;
+    if (score < 45) return false;
 
     const isTvPost = /season|s0\d|series|episodes|complete/i.test(postTitle);
     if (isTvTarget && !isTvPost) return false; // Reject movies when user wanted TV series
@@ -179,7 +179,23 @@ export async function getVegaMoviesQualityOptions(
     return true;
   });
 
-  // Step 2: Exact Year Priority Rule
+  // Step 2: Smart Local Season-Matching Ranker (0 extra network calls!)
+  if (isTvTarget && seasonNum && seasonNum > 0 && candidateHits.length > 0) {
+    const exactSeasonRegex = new RegExp(`\\b(?:Season|S)\\s*0*${seasonNum}\\b`, 'i');
+    const multiSeasonRegex = /season\s*\d+\s*[-&,]\s*\d+|complete/i;
+
+    candidateHits.sort((a: any, b: any) => {
+      const titleA = a.document?.post_title || '';
+      const titleB = b.document?.post_title || '';
+
+      const scoreA = exactSeasonRegex.test(titleA) ? 2 : multiSeasonRegex.test(titleA) ? 1 : 0;
+      const scoreB = exactSeasonRegex.test(titleB) ? 2 : multiSeasonRegex.test(titleB) ? 1 : 0;
+
+      return scoreB - scoreA;
+    });
+  }
+
+  // Step 3: Exact Year Priority Rule
   if (numTargetYear && candidateHits.length > 0) {
     const exactYearHits = candidateHits.filter((hit: any) => {
       const postTitle = hit.document?.post_title || '';
@@ -638,7 +654,10 @@ export async function resolveVegaMovies480pStream(
       imdbId,
       mediaType,
       baseDomain,
-      'VEGAMOVIES'
+      'VEGAMOVIES',
+      undefined,
+      undefined,
+      seasonNum
     );
 
     console.log(`[VegaMoviesStream] getVegaMoviesQualityOptions returned ${options?.length || 0} options`);

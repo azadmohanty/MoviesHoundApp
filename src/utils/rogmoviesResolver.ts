@@ -141,10 +141,12 @@ export async function getRogMoviesQualityOptions(
   baseDomain: string = DEFAULT_ROG_DOMAIN,
   siteDisplayName: string = 'ROGMOVIES',
   signal?: AbortSignal,
-  onLog?: (msg: string) => void
+  onLog?: (msg: string) => void,
+  seasonNum?: number
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = sanitizeSearchQuery(queryTitle);
   const domain = baseDomain || DEFAULT_ROG_DOMAIN;
+  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
   const searchUrl = `${domain}/search.php?q=${encodeURIComponent(searchQuery)}&page=1`;
 
   if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${domain}...`);
@@ -168,12 +170,11 @@ export async function getRogMoviesQualityOptions(
   if (onLog) onLog(`${siteDisplayName}: ${hits.length} raw search hits found. Pre-filtering...`);
 
   const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
-  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
 
   let candidateHits = hits.filter((hit: any) => {
     const postTitle = hit.document?.post_title || '';
     const score = calculateMatchConfidence(queryTitle, postTitle, targetYear);
-    if (score < 50) return false;
+    if (score < 45) return false;
 
     const isTvPost = /season|s0\d|series|episodes|complete/i.test(postTitle);
     if (isTvTarget && !isTvPost) return false;
@@ -181,6 +182,22 @@ export async function getRogMoviesQualityOptions(
 
     return true;
   });
+
+  // Step 2: Smart Local Season-Matching Ranker (0 extra network calls!)
+  if (isTvTarget && seasonNum && seasonNum > 0 && candidateHits.length > 0) {
+    const exactSeasonRegex = new RegExp(`\\b(?:Season|S)\\s*0*${seasonNum}\\b`, 'i');
+    const multiSeasonRegex = /season\s*\d+\s*[-&,]\s*\d+|complete/i;
+
+    candidateHits.sort((a: any, b: any) => {
+      const titleA = a.document?.post_title || '';
+      const titleB = b.document?.post_title || '';
+
+      const scoreA = exactSeasonRegex.test(titleA) ? 2 : multiSeasonRegex.test(titleA) ? 1 : 0;
+      const scoreB = exactSeasonRegex.test(titleB) ? 2 : multiSeasonRegex.test(titleB) ? 1 : 0;
+
+      return scoreB - scoreA;
+    });
+  }
 
   if (numTargetYear && candidateHits.length > 0) {
     const exactYearHits = candidateHits.filter((hit: any) => {
@@ -637,7 +654,10 @@ export async function resolveRogMovies480pStream(
       imdbId,
       mediaType,
       baseDomain,
-      'ROGMOVIES'
+      'ROGMOVIES',
+      undefined,
+      undefined,
+      seasonNum
     );
 
     console.log(`[RogMoviesStream] getRogMoviesQualityOptions returned ${options?.length || 0} options`);
