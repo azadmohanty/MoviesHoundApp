@@ -28,7 +28,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { getMediaCredits, getSimilarMedia, getTVShowDetails, CastMember, TMDBMediaItem, TVShowDetails } from '../utils/tmdb';
 import { getStreamServerUrl, resolveStreamUrl } from '../utils/streamResolver';
 import { recordPlaybackDuration, recordUserAction } from '../utils/TasteEngine';
-import { toggleListItem, isInList, STORAGE_KEYS, subscribeStorageChanges } from '../utils/DatabaseStorage';
+import { toggleListItem, isInList, STORAGE_KEYS, subscribeStorageChanges, savePlaybackProgress } from '../utils/DatabaseStorage';
 import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic, triggerSelectionHaptic } from '../utils/HapticsHelper';
 
 const { width } = Dimensions.get('window');
@@ -612,6 +612,23 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
         if (res && res.streamUrl && (res.streamUrl.startsWith('http://') || res.streamUrl.startsWith('https://'))) {
           addLog(`Server ${serverIdx} resolved successfully (${res.sourceName}) -> ${res.streamUrl.substring(0, 60)}...`);
           setActiveUrl(res.streamUrl);
+          if (mediaItem) {
+            const pUrl = mediaItem.posterUrl
+              ? (mediaItem.posterUrl.startsWith('http') ? mediaItem.posterUrl : `https://image.tmdb.org/t/p/w500${mediaItem.posterUrl}`)
+              : '';
+            savePlaybackProgress(
+              {
+                id: mediaItem.id,
+                title: mediaItem.title || title || 'Untitled',
+                posterUrl: pUrl,
+                mediaType: mediaItem.mediaType || 'movie',
+                rating: mediaItem.rating || 0,
+                releaseDate: mediaItem.releaseDate || '',
+              },
+              0,
+              0
+            ).catch(() => {});
+          }
           if (res.availableLanguages && res.availableLanguages.length > 0) {
             setAvailableLanguages(res.availableLanguages);
           }

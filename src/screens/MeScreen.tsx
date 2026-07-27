@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Modal,
   Dimensions,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -62,6 +63,11 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
   const [loved, setLoved] = useState<any[]>([]);
   const [disliked, setDisliked] = useState<any[]>([]);
   const [watchHistory, setWatchHistory] = useState<any[]>([]);
+
+  // History Sub-Tab & Additional History States
+  const [historySubTab, setHistorySubTab] = useState<'watch' | 'search' | 'download'>('watch');
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  const [downloadHistory, setDownloadHistory] = useState<any[]>([]);
 
   // Settings & Theme states
   const [accentColor, setAccentColor] = useState('#FF2D55');
@@ -126,6 +132,8 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
         lv,
         dl,
         hi,
+        sh,
+        dh,
         key,
         proxy,
         api,
@@ -141,6 +149,8 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
         getList(STORAGE_KEYS.LOVED),
         getList(STORAGE_KEYS.DISLIKED),
         getList(STORAGE_KEYS.HISTORY),
+        getList(STORAGE_KEYS.RECENT_SEARCHES),
+        getList(STORAGE_KEYS.DOWNLOAD_HISTORY),
         getStorageString(STORAGE_KEYS.TMDB_KEY),
         getStorageString(STORAGE_KEYS.PROXY_ENABLED),
         getStorageString(STORAGE_KEYS.PROXY_API),
@@ -157,6 +167,8 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
       setLoved(lv);
       setDisliked(dl);
       setWatchHistory(hi);
+      setSearchHistory(sh.map((item: any) => typeof item === 'string' ? item : item.title || String(item)));
+      setDownloadHistory(dh);
 
       if (key) setTmdbKey(key);
       setProxyEnabled(proxy === 'true');
@@ -214,12 +226,31 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
 
   const clearHistory = async () => {
     try {
-      await AsyncStorage.removeItem('@watch_history');
-      await AsyncStorage.removeItem('@search_history');
+      await AsyncStorage.removeItem(STORAGE_KEYS.HISTORY);
       setWatchHistory([]);
-      Alert.alert('History Cleared', 'Your local click & watch history has been reset.');
+      Alert.alert('History Cleared', 'Your watch history has been reset.');
     } catch (e) {
-      Alert.alert('Error', 'Failed to clear history.');
+      Alert.alert('Error', 'Failed to clear watch history.');
+    }
+  };
+
+  const clearSearchHistory = async () => {
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEYS.RECENT_SEARCHES);
+      setSearchHistory([]);
+      Alert.alert('Search History Cleared', 'Your recent search history has been reset.');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to clear search history.');
+    }
+  };
+
+  const clearDownloadHistory = async () => {
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEYS.DOWNLOAD_HISTORY);
+      setDownloadHistory([]);
+      Alert.alert('Download History Cleared', 'Your download link history has been reset.');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to clear download history.');
     }
   };
 
@@ -530,61 +561,205 @@ export default function MeScreen({ onNavigateToDownloader }: MeScreenProps = {})
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 2: WATCH HISTORY */}
+        {/* TAB 2: HISTORY HUB (WATCH HISTORY, SEARCH HISTORY, DOWNLOAD HISTORY) */}
         {/* ========================================================================= */}
         {activeMainTab === 'history' && (
           <View style={styles.tabSection}>
-            <View style={styles.listHeaderRow}>
-              <Text style={styles.listHeaderTitle}>WATCH & PLAYHEAD HISTORY ({watchHistory.length})</Text>
-              {watchHistory.length > 0 && (
-                <TouchableOpacity onPress={clearHistory}>
-                  <Text style={[styles.exportListLink, { color: '#FF2D55' }]}>CLEAR ALL HISTORY</Text>
+            {/* 3 Sub-Tab Pills */}
+            <View style={styles.filterGridContainer}>
+              <View style={styles.filterGridRow}>
+                <TouchableOpacity
+                  style={[styles.filterGridCapsule, historySubTab === 'watch' && styles.filterCapsuleActive]}
+                  onPress={() => setHistorySubTab('watch')}
+                >
+                  <Ionicons name="time-outline" size={13} color={historySubTab === 'watch' ? '#0A0A0C' : '#FF2D55'} />
+                  <Text style={[styles.filterGridText, historySubTab === 'watch' && { color: '#0A0A0C' }]}>
+                    WATCHED ({watchHistory.length})
+                  </Text>
                 </TouchableOpacity>
-              )}
+
+                <TouchableOpacity
+                  style={[styles.filterGridCapsule, historySubTab === 'search' && styles.filterCapsuleActive]}
+                  onPress={() => setHistorySubTab('search')}
+                >
+                  <Ionicons name="search-outline" size={13} color={historySubTab === 'search' ? '#0A0A0C' : '#00E5FF'} />
+                  <Text style={[styles.filterGridText, historySubTab === 'search' && { color: '#0A0A0C' }]}>
+                    SEARCHES ({searchHistory.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.filterGridCapsule, historySubTab === 'download' && styles.filterCapsuleActive]}
+                  onPress={() => setHistorySubTab('download')}
+                >
+                  <Ionicons name="download-outline" size={13} color={historySubTab === 'download' ? '#0A0A0C' : '#00FF88'} />
+                  <Text style={[styles.filterGridText, historySubTab === 'download' && { color: '#0A0A0C' }]}>
+                    DOWNLOADS ({downloadHistory.length})
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
-            {watchHistory.length > 0 ? (
-              <View style={styles.historyList}>
-                {watchHistory.map((item, idx) => (
-                  <TouchableOpacity
-                    key={`hist-${item.id || idx}`}
-                    style={styles.historyCard}
-                    onPress={() => {
-                      setActiveMediaItem({
-                        id: item.id,
-                        title: item.title,
-                        posterUrl: item.posterUrl,
-                        mediaType: item.mediaType || 'movie',
-                        rating: item.rating || 0,
-                        releaseDate: item.releaseDate || '',
-                      });
-                      setPlayerVisible(true);
-                    }}
-                  >
-                    <Image source={{ uri: item.posterUrl }} style={styles.historyPoster} />
-                    <View style={styles.historyInfo}>
-                      <Text style={styles.historyTitle} numberOfLines={1}>
-                        {(item.title || '').toUpperCase()}
-                      </Text>
-                      <Text style={styles.historyMeta}>
-                        {(item.mediaType || 'MOVIE').toUpperCase()} • WATCHED {item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : 'RECENTLY'}
-                      </Text>
-                      {item.progress && (
-                        <View style={styles.historyProgressBg}>
-                          <View style={[styles.historyProgressFill, { width: `${Math.min(100, item.progress * 100)}%` }]} />
+            {/* SUB-TAB 1: WATCH HISTORY */}
+            {historySubTab === 'watch' && (
+              <>
+                <View style={styles.listHeaderRow}>
+                  <Text style={styles.listHeaderTitle}>WATCH & PLAYHEAD HISTORY ({watchHistory.length})</Text>
+                  {watchHistory.length > 0 && (
+                    <TouchableOpacity onPress={clearHistory}>
+                      <Text style={[styles.exportListLink, { color: '#FF2D55' }]}>CLEAR ALL HISTORY</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {watchHistory.length > 0 ? (
+                  <View style={styles.historyList}>
+                    {watchHistory.map((item, idx) => (
+                      <TouchableOpacity
+                        key={`hist-${item.id || idx}`}
+                        style={styles.historyCard}
+                        onPress={() => {
+                          setActiveMediaItem({
+                            id: item.id,
+                            title: item.title,
+                            posterUrl: item.posterUrl,
+                            mediaType: item.mediaType || 'movie',
+                            rating: item.rating || 0,
+                            releaseDate: item.releaseDate || '',
+                          });
+                          setPlayerVisible(true);
+                        }}
+                      >
+                        <Image source={{ uri: item.posterUrl }} style={styles.historyPoster} />
+                        <View style={styles.historyInfo}>
+                          <Text style={styles.historyTitle} numberOfLines={1}>
+                            {(item.title || '').toUpperCase()}
+                          </Text>
+                          <Text style={styles.historyMeta}>
+                            {(item.mediaType || 'MOVIE').toUpperCase()} • WATCHED {item.timestamp ? new Date(item.timestamp).toLocaleDateString() : 'RECENTLY'}
+                          </Text>
+                          {item.resumeTimecodeSeconds ? (
+                            <Text style={styles.historyMeta}>
+                              RESUME AT {Math.floor(item.resumeTimecodeSeconds / 60)}M {item.resumeTimecodeSeconds % 60}S
+                            </Text>
+                          ) : null}
                         </View>
-                      )}
-                    </View>
-                    <Ionicons name="play-circle-outline" size={28} color={accentColor} />
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : (
-              <View style={styles.emptyContainer}>
-                <Ionicons name="time-outline" size={44} color="rgba(255,255,255,0.2)" />
-                <Text style={styles.emptyText}>NO RECENT PLAYBACK HISTORY.</Text>
-                <Text style={styles.emptySub}>Movies and TV shows you stream will appear here automatically.</Text>
-              </View>
+                        <Ionicons name="play-circle-outline" size={28} color={accentColor} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Ionicons name="time-outline" size={44} color="rgba(255,255,255,0.2)" />
+                    <Text style={styles.emptyText}>NO RECENT PLAYBACK HISTORY.</Text>
+                    <Text style={styles.emptySub}>Movies and TV shows you stream will appear here automatically.</Text>
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* SUB-TAB 2: SEARCH HISTORY */}
+            {historySubTab === 'search' && (
+              <>
+                <View style={styles.listHeaderRow}>
+                  <Text style={styles.listHeaderTitle}>RECENT SEARCH QUERIES ({searchHistory.length})</Text>
+                  {searchHistory.length > 0 && (
+                    <TouchableOpacity onPress={clearSearchHistory}>
+                      <Text style={[styles.exportListLink, { color: '#FF2D55' }]}>CLEAR SEARCHES</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {searchHistory.length > 0 ? (
+                  <View style={styles.historyList}>
+                    {searchHistory.map((query, idx) => (
+                      <TouchableOpacity
+                        key={`search-query-${idx}`}
+                        style={styles.historyCard}
+                        onPress={() => {
+                          if (onNavigateToDownloader) {
+                            onNavigateToDownloader(query);
+                          }
+                        }}
+                      >
+                        <View style={styles.searchIconBox}>
+                          <Ionicons name="search" size={18} color="#00E5FF" />
+                        </View>
+                        <View style={styles.historyInfo}>
+                          <Text style={styles.historyTitle} numberOfLines={1}>
+                            "{query.toUpperCase()}"
+                          </Text>
+                          <Text style={styles.historyMeta}>TAP TO RE-SEARCH IN DOWNLOADER</Text>
+                        </View>
+                        <Ionicons name="arrow-forward" size={18} color="rgba(255,255,255,0.4)" />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Ionicons name="search-outline" size={44} color="rgba(255,255,255,0.2)" />
+                    <Text style={styles.emptyText}>NO RECENT SEARCH HISTORY.</Text>
+                    <Text style={styles.emptySub}>Searches perform in the discovery or downloader tabs will show here.</Text>
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* SUB-TAB 3: DOWNLOAD HISTORY */}
+            {historySubTab === 'download' && (
+              <>
+                <View style={styles.listHeaderRow}>
+                  <Text style={styles.listHeaderTitle}>EXTRACTED DOWNLOAD LINKS ({downloadHistory.length})</Text>
+                  {downloadHistory.length > 0 && (
+                    <TouchableOpacity onPress={clearDownloadHistory}>
+                      <Text style={[styles.exportListLink, { color: '#FF2D55' }]}>CLEAR DOWNLOAD HISTORY</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {downloadHistory.length > 0 ? (
+                  <View style={styles.historyList}>
+                    {downloadHistory.map((item, idx) => (
+                      <View key={`dl-hist-${item.id || idx}`} style={styles.historyCard}>
+                        {item.posterUrl ? (
+                          <Image source={{ uri: item.posterUrl }} style={styles.historyPoster} />
+                        ) : (
+                          <View style={styles.searchIconBox}>
+                            <Ionicons name="download" size={18} color="#00FF88" />
+                          </View>
+                        )}
+                        <View style={styles.historyInfo}>
+                          <Text style={styles.historyTitle} numberOfLines={1}>
+                            {(item.title || 'Downloaded File').toUpperCase()}
+                          </Text>
+                          <Text style={styles.historyMeta}>
+                            {item.qualityLabel || '720p'} • {item.timestamp ? new Date(item.timestamp).toLocaleDateString() : 'RECENT'}
+                          </Text>
+                        </View>
+                        
+                        {/* 1-Tap Open / Re-Download Link in Browser */}
+                        <TouchableOpacity
+                          style={{ padding: 6 }}
+                          onPress={() => {
+                            triggerSuccessHaptic();
+                            Linking.openURL(item.downloadUrl).catch(() =>
+                              Alert.alert('Error', 'Could not open download URL.')
+                            );
+                          }}
+                        >
+                          <Ionicons name="open-outline" size={22} color="#00FF88" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Ionicons name="download-outline" size={44} color="rgba(255,255,255,0.2)" />
+                    <Text style={styles.emptyText}>NO DOWNLOAD HISTORY.</Text>
+                    <Text style={styles.emptySub}>Streams resolved for download will be logged here for 1-tap re-opening.</Text>
+                  </View>
+                )}
+              </>
             )}
           </View>
         )}
@@ -1122,6 +1297,15 @@ const styles = StyleSheet.create({
     height: 66,
     borderRadius: 4,
     backgroundColor: '#1E1E24',
+    marginRight: 12,
+  },
+  searchIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginRight: 12,
   },
   historyInfo: {

@@ -17,7 +17,7 @@ import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from
 import { resolveAllDomains } from '../utils/resolver';
 import { resolveFzMoviesStream } from '../utils/fzmoviesResolver';
 import { sanitizeSearchQuery } from '../utils/FuzzyMatcher';
-import { getStorageString } from '../utils/DatabaseStorage';
+import { getStorageString, saveDownloadItem } from '../utils/DatabaseStorage';
 
 // Shared models & site resolvers
 import { ScrapedQualityOption, ResolvedStreamResult } from '../utils/resolverTypes';
@@ -366,6 +366,14 @@ export default function DownloaderScreen({
 
     if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox') {
       if (action === 'download') {
+        saveDownloadItem({
+          id: item.id || targetUrl,
+          title: query || 'Downloaded File',
+          posterUrl: '',
+          mediaType: isSeries ? 'tv' : 'movie',
+          qualityLabel: `${item.qualityLabel} • ${item.siteDisplayName}`,
+          downloadUrl: targetUrl,
+        }).catch(() => {});
         Linking.openURL(targetUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
         Alert.alert('Download Link', targetUrl);
@@ -383,6 +391,14 @@ export default function DownloaderScreen({
       if (action === 'download') {
         triggerSuccessHaptic();
         addLog('Unlocked VCloud page ready');
+        saveDownloadItem({
+          id: item.id || unlockedUrl,
+          title: query || 'Downloaded File',
+          posterUrl: '',
+          mediaType: isSeries ? 'tv' : 'movie',
+          qualityLabel: `${item.qualityLabel} • ${item.siteDisplayName}`,
+          downloadUrl: unlockedUrl,
+        }).catch(() => {});
         Linking.openURL(unlockedUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
         Alert.alert('Unlocked VCloud Server Link', unlockedUrl);
@@ -409,6 +425,14 @@ export default function DownloaderScreen({
       triggerSuccessHaptic();
       addLog(`Resolved: ${res.providerName}`);
       if (action === 'download') {
+        saveDownloadItem({
+          id: item.id || res.streamUrl,
+          title: query || 'Downloaded File',
+          posterUrl: '',
+          mediaType: isSeries ? 'tv' : 'movie',
+          qualityLabel: `${item.qualityLabel} • ${res.providerName}`,
+          downloadUrl: res.streamUrl,
+        }).catch(() => {});
         Linking.openURL(res.streamUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
         Alert.alert('Direct Download Link', res.streamUrl);

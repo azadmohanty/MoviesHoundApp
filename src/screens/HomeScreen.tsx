@@ -48,6 +48,7 @@ import {
   fetchFromTMDB,
   discoverMediaByGenre,
   discoverMediaWithFilters,
+  getSimilarMedia,
   TMDB_GENRES,
   searchTMDB
 } from '../utils/tmdb';
@@ -59,7 +60,7 @@ import {
   runLegacyMigrationIfNeeded,
 } from '../utils/DatabaseStorage';
 import { getCachedFeed, saveCachedFeed } from '../utils/ContentCache';
-import { getTasteProfile, rankItemsByTaste } from '../utils/TasteEngine';
+import { getTasteProfile, rankItemsByTaste, computeItemMatchPercentage } from '../utils/TasteEngine';
 import {
   getTrendingAnime,
   getPopularAnime,
@@ -164,6 +165,13 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const [selectedRating, setSelectedRating] = useState<number>(0);
   const [exploreMedia, setExploreMedia] = useState<TMDBMediaItem[]>([]);
   const [exploreLoading, setExploreLoading] = useState(false);
+  const [explorePage, setExplorePage] = useState(1);
+  const [exploreLoadingMore, setExploreLoadingMore] = useState(false);
+  const [hasMoreExplore, setHasMoreExplore] = useState(true);
+  const exploreCacheRef = useRef<Record<string, TMDBMediaItem[]>>({});
+  const [tasteProfileState, setTasteProfileState] = useState<any>(null);
+  const [becauseYouLovedRow, setBecauseYouLovedRow] = useState<TMDBMediaItem[]>([]);
+  const [becauseYouLovedTitle, setBecauseYouLovedTitle] = useState<string>('');
 
   // Search Core States
   const [query, setQuery] = useState('');
@@ -176,9 +184,21 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
+  const saveSearchTerm = async (term: string) => {
+    const trimmed = term.trim();
+    if (!trimmed) return;
+    try {
+      const updated = [trimmed, ...recentSearches.filter(s => s.toLowerCase() !== trimmed.toLowerCase())].slice(0, 10);
+      setRecentSearches(updated);
+      await AsyncStorage.setItem(STORAGE_KEYS.RECENT_SEARCHES, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Failed saving search term:', e);
+    }
+  };
+
   const removeRecentSearchTerm = async (term: string) => {
     try {
-      const updated = recentSearches.filter(t => t !== term);
+      const updated = recentSearches.filter(t => t.toLowerCase() !== term.toLowerCase());
       await AsyncStorage.setItem(STORAGE_KEYS.RECENT_SEARCHES, JSON.stringify(updated));
       setRecentSearches(updated);
     } catch (e) {
@@ -377,6 +397,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
       // 2. Fetch fresh data in background
       const config = await getTMDBConfig();
       const profile = await getTasteProfile();
+      setTasteProfileState(profile);
 
       const animeTrends = await getTrendingAnime();
       setTrendingAnime(animeTrends);
@@ -399,6 +420,21 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
           const rankedTMDB = rankItemsByTaste([...hollywood, ...tvShows, ...bollywood], profile);
           setForYouFeed(rankedTMDB);
           saveCachedFeed('forYou', rankedTMDB);
+
+          // Seed "Because You Loved" Carousel if user has loved items
+          if (profile.lovedIds && profile.lovedIds.length > 0) {
+            const lastLovedId = profile.lovedIds[profile.lovedIds.length - 1];
+            try {
+              const similar = await getSimilarMedia(lastLovedId, 'movie');
+              if (similar && similar.length > 0) {
+                setBecauseYouLovedRow(similar);
+                const lovedItemMatch = [...hollywood, ...tvShows, ...bollywood].find(i => i.id === lastLovedId);
+                setBecauseYouLovedTitle(lovedItemMatch ? lovedItemMatch.title : 'Recent Favorite');
+              }
+            } catch (e) {
+              console.warn('Failed loading because you loved recommendations:', e);
+            }
+          }
 
           if (rankedTMDB.length > 0) {
             setHeroMedia(rankedTMDB[0]);
@@ -423,40 +459,65 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     }
   };
 
-  const loadExploreData = async (filtersToUse?: FilterOptions | null) => {
+  const loadExploreData = async (filtersToUse?: FilterOptions | null, pageToLoad: number = 1) => {
     try {
-      setExploreLoading(true);
-      const f = filtersToUse !== undefined ? filtersToUse : activeFilters;
-      if (f) {
-        const items = await discoverMediaWithFilters(f);
-        setExploreMedia(items);
+      if (pageToLoad === 1) {
+        setExploreLoading(true);
+        setExplorePage(1);
+        setHasMoreExplore(true);
       } else {
-        let genreId = TMDB_GENRES[selectedGenre];
-        if (exploreType === 'tv') {
-          if (selectedGenre === 'Action' || selectedGenre === 'Adventure') {
-            genreId = 10759;
-          } else if (selectedGenre === 'SciFi') {
-            genreId = 10765;
-          } else if (selectedGenre === 'Horror' || selectedGenre === 'Thriller') {
-            genreId = 9648;
+        setExploreLoadingMore(true);
+      }
+
+      const f = filtersToUse !== undefined ? filtersToUse : activeFilters;
+      const cacheKey = JSON.stringify({ f, exploreType, selectedGenre, selectedYear, selectedRating, page: pageToLoad });
+
+      let items: TMDBMediaItem[] = [];
+
+      if (exploreCacheRef.current[cacheKey]) {
+        items = exploreCacheRef.current[cacheKey];
+      } else {
+        if (f) {
+          items = await discoverMediaWithFilters(f, pageToLoad);
+        } else {
+          let genreId = TMDB_GENRES[selectedGenre];
+          if (exploreType === 'tv') {
+            if (selectedGenre === 'Action' || selectedGenre === 'Adventure') genreId = 10759;
+            else if (selectedGenre === 'SciFi') genreId = 10765;
+            else if (selectedGenre === 'Horror' || selectedGenre === 'Thriller') genreId = 9648;
+          }
+          let numericYear: number | undefined = undefined;
+          if (selectedYear !== 'ALL YEARS') {
+            const parsed = parseInt(selectedYear, 10);
+            if (!isNaN(parsed)) numericYear = parsed;
+          }
+          items = await discoverMediaByGenre(genreId, pageToLoad, numericYear, 'popularity.desc', exploreType);
+          if (selectedRating > 0) {
+            items = items.filter(i => i.rating >= selectedRating);
           }
         }
-        let numericYear: number | undefined = undefined;
-        if (selectedYear !== 'ALL YEARS') {
-          const parsed = parseInt(selectedYear, 10);
-          if (!isNaN(parsed)) numericYear = parsed;
-        }
-        const items = await discoverMediaByGenre(genreId, 1, numericYear, 'popularity.desc', exploreType);
-        let filtered = items;
-        if (selectedRating > 0) {
-          filtered = filtered.filter(i => i.rating >= selectedRating);
-        }
-        setExploreMedia(filtered);
+        exploreCacheRef.current[cacheKey] = items;
       }
+
+      if (items.length < 20) {
+        setHasMoreExplore(false);
+      }
+
+      if (pageToLoad === 1) {
+        setExploreMedia(items);
+      } else {
+        setExploreMedia(prev => {
+          const existingIds = new Set(prev.map(i => i.id));
+          const newItems = items.filter(i => !existingIds.has(i.id));
+          return [...prev, ...newItems];
+        });
+      }
+      setExplorePage(pageToLoad);
     } catch (e) {
       console.warn('Failed loading explore data:', e);
     } finally {
       setExploreLoading(false);
+      setExploreLoadingMore(false);
     }
   };
 
@@ -596,10 +657,8 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     setLoading(true);
     setStatusMessage('Searching titles...');
 
-    // Save recent searches
-    let updatedRecent = [trimmedQuery, ...recentSearches.filter(s => s !== trimmedQuery)].slice(0, 3);
-    setRecentSearches(updatedRecent);
-    await AsyncStorage.setItem('@movieshound_recent_searches', JSON.stringify(updatedRecent));
+    // Save recent search using STORAGE_KEYS.RECENT_SEARCHES
+    saveSearchTerm(trimmedQuery);
 
     try {
       const searchRes = await searchTMDB(trimmedQuery);
@@ -1036,6 +1095,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
                     style={styles.suggestionRow}
                     onPress={() => {
                       setQuery(item.title);
+                      saveSearchTerm(item.title);
                       setIsSearchOverlayOpen(false);
                       handleWatchStream(item);
                     }}
@@ -1188,6 +1248,16 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
               </ScrollView>
             </View>
 
+            {/* Seeded Recommendation Carousel: BECAUSE YOU LOVED [TITLE] */}
+            {becauseYouLovedRow.length > 0 && (
+              <View style={styles.feedLane}>
+                <Text style={styles.laneTitle}>BECAUSE YOU LOVED: {becauseYouLovedTitle.toUpperCase()}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.laneScroll}>
+                  {becauseYouLovedRow.map(item => renderFeedCard(item, item.mediaType || 'movie', 'all'))}
+                </ScrollView>
+              </View>
+            )}
+
             {/* Trending Hollywood Movies */}
             <View style={styles.feedLane}>
               <Text style={styles.laneTitle}>TRENDING HOLLYWOOD MOVIES</Text>
@@ -1266,7 +1336,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
                     onPress={() => {
                       const f = chip.filter as FilterOptions;
                       setActiveFilters(f);
-                      loadExploreData(f);
+                      loadExploreData(f, 1);
                     }}
                   >
                     <Text style={[styles.presetChipText, isActive && styles.presetChipTextActive]}>
@@ -1286,7 +1356,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
                 <TouchableOpacity
                   onPress={() => {
                     setActiveFilters(null);
-                    loadExploreData(null);
+                    loadExploreData(null, 1);
                   }}
                 >
                   <Text style={styles.hudClearText}>CLEAR</Text>
@@ -1294,7 +1364,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
               </View>
             )}
 
-            {/* 3-Column Explore Grid */}
+            {/* 3-Column Explore Grid with 50-Item Auto-Pagination Safeguard */}
             {exploreLoading || exploreMedia.length === 0 ? (
               <View style={styles.exploreGrid}>
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
@@ -1313,6 +1383,38 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
                 contentContainerStyle={styles.exploreGrid}
                 columnWrapperStyle={styles.exploreGridRow}
                 renderItem={({ item }) => renderFeedCard(item, item.mediaType || 'movie', 'all')}
+                onEndReachedThreshold={0.5}
+                onEndReached={() => {
+                  // Anti-exploitation cap: auto-paginate up to 50 items (2-3 pages)
+                  if (exploreMedia.length < 50 && hasMoreExplore && !exploreLoadingMore && !exploreLoading) {
+                    loadExploreData(activeFilters, explorePage + 1);
+                  }
+                }}
+                ListFooterComponent={
+                  exploreLoadingMore ? (
+                    <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color="#FF2D55" />
+                    </View>
+                  ) : exploreMedia.length >= 50 && hasMoreExplore ? (
+                    <TouchableOpacity
+                      style={{
+                        marginVertical: 20,
+                        paddingVertical: 14,
+                        marginHorizontal: 16,
+                        backgroundColor: '#1E1E24',
+                        borderRadius: 8,
+                        alignItems: 'center',
+                        borderWidth: 1,
+                        borderColor: 'rgba(255, 45, 85, 0.3)',
+                      }}
+                      onPress={() => loadExploreData(activeFilters, explorePage + 1)}
+                    >
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#FF2D55', letterSpacing: 1 }}>
+                        LOAD MORE RESULTS (PAGE {explorePage + 1})
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null
+                }
                 ListEmptyComponent={
                   <View style={styles.emptyContainer}>
                     <Text style={styles.emptyText}>NO CONTENT MATCHES CURRENT FILTERS</Text>

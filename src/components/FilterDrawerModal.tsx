@@ -17,6 +17,7 @@ export interface FilterOptions {
   selectedOtts: string[];
   selectedGenres: number[];
   minRating: number;
+  minVoteCount?: number;
   sortBy: string;
 }
 
@@ -58,6 +59,12 @@ const YEAR_LIST = ['all', '2026', '2025', '2024', '2023', '2020s', '2010s'];
 
 const RATING_STEPS = [0, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0];
 
+const VOTE_COUNT_STEPS = [
+  { label: 'ALL (5+)', value: 5 },
+  { label: 'POPULAR (50+)', value: 50 },
+  { label: 'MASTERPIECES (500+)', value: 500 },
+];
+
 const OTT_LIST = [
   { id: 'netflix', name: 'Netflix' },
   { id: 'prime', name: 'Prime Video' },
@@ -69,7 +76,8 @@ const OTT_LIST = [
 
 const SORT_OPTIONS = [
   { label: 'Popularity', value: 'popularity.desc' },
-  { label: 'Rating', value: 'vote_average.desc' },
+  { label: 'Most Reviewed', value: 'vote_count.desc' },
+  { label: 'Highest Rating', value: 'vote_average.desc' },
   { label: 'Release Date', value: 'primary_release_date.desc' },
 ];
 
@@ -97,6 +105,9 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
   const [minRating, setMinRating] = useState<number>(
     initialFilters?.minRating || 0
   );
+  const [minVoteCount, setMinVoteCount] = useState<number>(
+    initialFilters?.minVoteCount || 50
+  );
   const [sortBy, setSortBy] = useState<string>(
     initialFilters?.sortBy || 'popularity.desc'
   );
@@ -109,6 +120,7 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
     selectedOtts.length +
     selectedGenres.length +
     (minRating > 0 ? 1 : 0) +
+    (minVoteCount !== 50 ? 1 : 0) +
     (sortBy !== 'popularity.desc' ? 1 : 0);
 
   React.useEffect(() => {
@@ -119,6 +131,7 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
       setSelectedOtts(initialFilters.selectedOtts || []);
       setSelectedGenres(initialFilters.selectedGenres || []);
       setMinRating(initialFilters.minRating || 0);
+      setMinVoteCount(initialFilters.minVoteCount || 50);
       setSortBy(initialFilters.sortBy || 'popularity.desc');
     }
   }, [visible, initialFilters]);
@@ -146,6 +159,7 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
     setSelectedOtts([]);
     setSelectedGenres([]);
     setMinRating(0);
+    setMinVoteCount(50);
     setSortBy('popularity.desc');
   };
 
@@ -157,6 +171,7 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
       selectedOtts,
       selectedGenres,
       minRating,
+      minVoteCount,
       sortBy,
     });
     onClose();
@@ -295,6 +310,30 @@ export const FilterDrawerModal: React.FC<FilterDrawerModalProps> = ({
                       ]}
                     >
                       {rating === 0 ? 'ANY ★' : `★ ${rating.toFixed(1)}`}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Minimum Reviews / Vote Threshold */}
+              <Text style={styles.sectionTitle}>MINIMUM REVIEWS THRESHOLD (IMDb/TMDB)</Text>
+              <View style={styles.wrapRow}>
+                {VOTE_COUNT_STEPS.map((step) => (
+                  <TouchableOpacity
+                    key={step.value}
+                    style={[
+                      styles.chip,
+                      minVoteCount === step.value && styles.chipActive,
+                    ]}
+                    onPress={() => setMinVoteCount(step.value)}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        minVoteCount === step.value && styles.chipTextActive,
+                      ]}
+                    >
+                      {step.label}
                     </Text>
                   </TouchableOpacity>
                 ))}

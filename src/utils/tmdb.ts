@@ -316,15 +316,26 @@ export const discoverMediaWithFilters = async (filters: {
   selectedYear?: string;
   selectedGenres?: number[];
   minRating?: number;
+  minVoteCount?: number;
   sortBy?: string;
-}): Promise<TMDBMediaItem[]> => {
+}, page: number = 1): Promise<TMDBMediaItem[]> => {
   try {
     const config = await getTMDBConfig();
 
     const buildParams = (endpointType: 'movie' | 'tv') => {
+      let sortByVal = filters.sortBy || 'popularity.desc';
+      let defaultVoteThreshold = 5;
+
+      if (sortByVal === 'vote_average.desc') {
+        defaultVoteThreshold = filters.minVoteCount || 50; // Protect against 1-vote obscure titles
+      } else if (sortByVal === 'vote_count.desc') {
+        defaultVoteThreshold = 100;
+      }
+
       const params: Record<string, string> = {
-        sort_by: filters.sortBy || 'popularity.desc',
-        'vote_count.gte': '5',
+        sort_by: sortByVal,
+        page: page.toString(),
+        'vote_count.gte': (filters.minVoteCount || defaultVoteThreshold).toString(),
       };
 
       if (filters.minRating && filters.minRating > 0) {
@@ -412,5 +423,6 @@ export const getImdbId = async (id: number, mediaType: 'movie' | 'tv'): Promise<
     return null;
   }
 };
+
 
 

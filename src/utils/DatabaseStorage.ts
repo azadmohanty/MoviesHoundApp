@@ -19,6 +19,7 @@ export const STORAGE_KEYS = {
   LOVED: '@loved_list',
   DISLIKED: '@disliked_list',
   HISTORY: '@watch_history',
+  DOWNLOAD_HISTORY: '@download_history',
   RECENT_SEARCHES: '@recent_searches',
   FEED_CACHE: '@cached_feeds',
   TMDB_KEY: '@tmdb_api_key',
@@ -210,6 +211,38 @@ export async function savePlaybackProgress(
   notifyListeners(STORAGE_KEYS.HISTORY, updated);
   AsyncStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(updated)).catch(e =>
     console.warn('[DatabaseStorage] History write error:', e)
+  );
+}
+
+/**
+ * Saves a download record to DOWNLOAD_HISTORY
+ */
+export async function saveDownloadItem(item: {
+  id: number | string;
+  title: string;
+  posterUrl: string;
+  mediaType?: string;
+  qualityLabel?: string;
+  downloadUrl: string;
+}): Promise<void> {
+  const current = await getList(STORAGE_KEYS.DOWNLOAD_HISTORY);
+  const newItem = {
+    id: item.id,
+    title: item.title || 'Untitled',
+    posterUrl: item.posterUrl || '',
+    mediaType: (item.mediaType || 'movie') as any,
+    qualityLabel: item.qualityLabel || '720p',
+    downloadUrl: item.downloadUrl,
+    timestamp: Date.now(),
+  };
+
+  const filtered = current.filter(i => !(i.id === newItem.id && (i as any).downloadUrl === newItem.downloadUrl));
+  const updated = [newItem as any, ...filtered].slice(0, 50);
+
+  memoryBuffer[STORAGE_KEYS.DOWNLOAD_HISTORY] = updated;
+  notifyListeners(STORAGE_KEYS.DOWNLOAD_HISTORY, updated);
+  AsyncStorage.setItem(STORAGE_KEYS.DOWNLOAD_HISTORY, JSON.stringify(updated)).catch(e =>
+    console.warn('[DatabaseStorage] Download history save error:', e)
   );
 }
 
