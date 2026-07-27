@@ -34,6 +34,7 @@ import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { SkeletonCard } from '../components/SkeletonCard';
 import { FilterDrawerModal, FilterOptions } from '../components/FilterDrawerModal';
 import { SearchResult, parseHTML } from '../utils/parser';
+import { findFuzzyTitleMatches, sanitizeSearchQuery } from '../utils/FuzzyMatcher';
 import { resolveAllDomains } from '../utils/resolver';
 import { resolveStreamUrl } from '../utils/streamResolver';
 import {
@@ -351,20 +352,62 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
     }
   }, [heroIndex, trendingHollywood]);
 
+  const searchCacheRef = useRef<Record<string, TMDBMediaItem[]>>({});
+
   useEffect(() => {
+    const cleanQuery = query.trim();
+    if (cleanQuery.length <= 1) {
+      setSearchSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    // 1. INSTANT LOCAL FUZZY MATCH (< 2ms): Instant feedback before network
+    const localCandidates = [
+      ...trendingHollywood,
+      ...trendingTV,
+      ...bollywoodHits,
+      ...(forYouFeed.filter(i => 'title' in i) as TMDBMediaItem[])
+    ];
+    const instantLocalMatches = findFuzzyTitleMatches(cleanQuery, localCandidates, 5);
+    if (instantLocalMatches.length > 0) {
+      setSearchSuggestions(instantLocalMatches);
+      setShowSuggestions(true);
+    }
+
+    // 2. FAST 150ms DEBOUNCED NETWORK SEARCH + MEMORY CACHE
     const delayDebounce = setTimeout(async () => {
-      if (query.trim().length > 1) {
-        const sugg = await searchTMDB(query);
-        setSearchSuggestions(sugg.slice(0, 5));
+      const cacheKey = cleanQuery.toLowerCase();
+      if (searchCacheRef.current[cacheKey]) {
+        setSearchSuggestions(searchCacheRef.current[cacheKey]);
         setShowSuggestions(true);
-      } else {
-        setSearchSuggestions([]);
-        setShowSuggestions(false);
+        return;
       }
-    }, 400);
+
+      try {
+        const sanitized = sanitizeSearchQuery(cleanQuery);
+        let sugg = await searchTMDB(sanitized || cleanQuery);
+
+        // If TMDB exact search returned 0 items due to typos, use local fuzzy matches
+        if ((!sugg || sugg.length === 0) && instantLocalMatches.length > 0) {
+          sugg = instantLocalMatches;
+        } else if (sugg && sugg.length > 0) {
+          // Re-score TMDB results with fuzzy matcher for best relevance
+          sugg = findFuzzyTitleMatches(cleanQuery, sugg, 5);
+        }
+
+        if (sugg && sugg.length > 0) {
+          searchCacheRef.current[cacheKey] = sugg;
+          setSearchSuggestions(sugg);
+          setShowSuggestions(true);
+        }
+      } catch (err) {
+        console.warn('Error fetching TMDB suggestions:', err);
+      }
+    }, 150);
 
     return () => clearTimeout(delayDebounce);
-  }, [query]);
+  }, [query, trendingHollywood, trendingTV, bollywoodHits, forYouFeed]);
 
   const loadDomains = async (force: boolean = false) => {
     const domains = await resolveAllDomains(setStatusMessage, force);
