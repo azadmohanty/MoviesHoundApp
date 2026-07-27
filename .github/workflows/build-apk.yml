@@ -39,6 +39,8 @@ jobs:
           echo "EXPO_PUBLIC_TMDB_API_KEY=${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}" > .env
 
       - name: Generate Native Android Directory (Expo Prebuild)
+        env:
+          EXPO_UPDATES_CHANNEL: main
         run: |
           npx expo prebuild --platform android --no-install
           echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties

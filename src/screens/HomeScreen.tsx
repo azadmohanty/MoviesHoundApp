@@ -111,12 +111,12 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
   const activeFilterCount = activeFilters
     ? (activeFilters.mediaType !== 'both' ? 1 : 0) +
-      (activeFilters.selectedLanguage !== 'all' ? 1 : 0) +
-      (activeFilters.selectedYear !== 'all' ? 1 : 0) +
-      (activeFilters.selectedOtts?.length || 0) +
-      (activeFilters.selectedGenres?.length || 0) +
-      (activeFilters.minRating > 0 ? 1 : 0) +
-      (activeFilters.sortBy !== 'popularity.desc' ? 1 : 0)
+    (activeFilters.selectedLanguage !== 'all' ? 1 : 0) +
+    (activeFilters.selectedYear !== 'all' ? 1 : 0) +
+    (activeFilters.selectedOtts?.length || 0) +
+    (activeFilters.selectedGenres?.length || 0) +
+    (activeFilters.minRating > 0 ? 1 : 0) +
+    (activeFilters.sortBy !== 'popularity.desc' ? 1 : 0)
     : 0;
 
   // Theme Accent State
@@ -687,7 +687,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
       await fetch(url, { method: 'HEAD', signal: controller.signal });
       clearTimeout(id);
-      
+
       const latency = Date.now() - startTime;
       setPingStatus(prev => ({ ...prev, [key]: { status: 'ok', latency } }));
     } catch (e) {
@@ -704,12 +704,12 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   };
 
   const handleSearchSubmit = async (
-    searchQuery: string = query, 
+    searchQuery: string = query,
     searchCategory: typeof category = category
   ) => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) return;
-    
+
     setCurrentTab('home');
     setSearchMode('movies');
     setIsSearchActive(true);
@@ -827,8 +827,8 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
   };
 
   const handleSearchSubmitWithIMDb = async (
-    title: string, 
-    type: 'movie' | 'tv' | 'anime', 
+    title: string,
+    type: 'movie' | 'tv' | 'anime',
     tmdbId?: number,
     releaseDate?: string,
     originCountry?: string[],
@@ -849,7 +849,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
             fetchedOriginalLang = details.original_language;
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     const INDIAN_LANGUAGES = ['hi', 'ta', 'te', 'ml', 'kn', 'mr', 'pa', 'bn', 'gu', 'or', 'as'];
@@ -930,7 +930,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
           >
             <Image source={{ uri: item.posterUrl }} style={[styles.feedPoster, { width: cardWidth, height: cardHeight }]} />
           </TouchableOpacity>
-          
+
           {/* Bookmark Glass Circle Button (Top Right) */}
           <TouchableOpacity
             style={styles.feedCardBookmark}
@@ -1009,7 +1009,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
       {/* Row 1 Header: HOLOGRAM Logo (Left) + Search Icon (Right) */}
       <View style={styles.headerRow}>
-        <Text style={styles.brandTitle}>HOLOGRAM V2 ★</Text>
+        <Text style={styles.brandTitle}>HOLOGRAM v2</Text>
 
         <TouchableOpacity
           style={styles.headerSearchBtn}
@@ -1568,7 +1568,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
                       handleWatchStream(item);
                     }}
                   >
-                    <Image source={{ uri: item.posterUrl }} style={{ width: '100%', aspectRatio: 2/3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }} />
+                    <Image source={{ uri: item.posterUrl }} style={{ width: '100%', aspectRatio: 2 / 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }} />
                     <Text style={{ fontFamily: 'NType82Mono', fontSize: 9, color: '#FFFFFF', marginTop: 4 }} numberOfLines={1}>
                       {item.title.toUpperCase()}
                     </Text>
@@ -2302,7 +2302,7 @@ const styles = StyleSheet.create({
   },
   watchlistPoster: {
     width: '100%',
-    aspectRatio: 2/3,
+    aspectRatio: 2 / 3,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
