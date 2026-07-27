@@ -1009,7 +1009,7 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
 
       {/* Row 1 Header: HOLOGRAM Logo (Left) + Search Icon (Right) */}
       <View style={styles.headerRow}>
-        <Text style={styles.brandTitle}>HOLOGRAM v2</Text>
+        <Text style={styles.brandTitle}>HOLOGRAM V3 🚀</Text>
 
         <TouchableOpacity
           style={styles.headerSearchBtn}
