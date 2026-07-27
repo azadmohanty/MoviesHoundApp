@@ -22,7 +22,9 @@ export interface BackupPayload {
   };
   watchHistory: any[];
   searchHistory: string[];
+  downloadHistory?: any[];
   settings: {
+    userName?: string;
     preferredLanguage?: string;
     selectedServer?: number;
     tmdbApiKey?: string;
@@ -44,6 +46,8 @@ export async function createBackupPayload(): Promise<BackupPayload> {
     disliked,
     watchHistory,
     searchHistoryStr,
+    downloadHistoryStr,
+    userName,
     tmdbKey,
     proxyEnabled,
     customApi,
@@ -59,6 +63,8 @@ export async function createBackupPayload(): Promise<BackupPayload> {
     getList(STORAGE_KEYS.DISLIKED),
     getList(STORAGE_KEYS.HISTORY),
     AsyncStorage.getItem(STORAGE_KEYS.RECENT_SEARCHES),
+    AsyncStorage.getItem(STORAGE_KEYS.DOWNLOAD_HISTORY),
+    AsyncStorage.getItem('@user_display_name'),
     AsyncStorage.getItem(STORAGE_KEYS.TMDB_KEY),
     AsyncStorage.getItem(STORAGE_KEYS.PROXY_ENABLED),
     AsyncStorage.getItem(STORAGE_KEYS.PROXY_API),
@@ -80,7 +86,9 @@ export async function createBackupPayload(): Promise<BackupPayload> {
     },
     watchHistory,
     searchHistory: searchHistoryStr ? JSON.parse(searchHistoryStr) : [],
+    downloadHistory: downloadHistoryStr ? JSON.parse(downloadHistoryStr) : [],
     settings: {
+      userName: userName || 'CHIEF',
       preferredLanguage: prefLang || 'Original',
       selectedServer: selServer ? parseInt(selServer, 10) : 1,
       tmdbApiKey: tmdbKey || '',
@@ -239,7 +247,13 @@ export async function restoreBackupFromJSON(data: BackupPayload): Promise<{ succ
     if (data.searchHistory) {
       await AsyncStorage.setItem(STORAGE_KEYS.RECENT_SEARCHES, JSON.stringify(data.searchHistory));
     }
+    if (data.downloadHistory) {
+      await AsyncStorage.setItem(STORAGE_KEYS.DOWNLOAD_HISTORY, JSON.stringify(data.downloadHistory));
+    }
     if (data.settings) {
+      if (data.settings.userName !== undefined) {
+        await setStorageString('@user_display_name', data.settings.userName);
+      }
       if (data.settings.tmdbApiKey !== undefined) {
         await setStorageString(STORAGE_KEYS.TMDB_KEY, data.settings.tmdbApiKey);
       }

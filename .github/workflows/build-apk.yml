@@ -39,7 +39,9 @@ jobs:
           echo "EXPO_PUBLIC_TMDB_API_KEY=${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}" > .env
 
       - name: Generate Native Android Directory (Expo Prebuild)
-        run: npx expo prebuild --platform android --no-install
+        run: |
+          npx expo prebuild --platform android --no-install
+          echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
 
       - name: Cache Gradle Packages
         uses: actions/cache@v4
@@ -53,11 +55,13 @@ jobs:
 
       - name: Build Android APK
         working-directory: android
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=\"-Xmx4096m -XX:MaxMetaspaceSize=1024m\""
         run: |
           if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
-            ./gradlew assembleDebug -PreactNativeArchitectures=arm64-v8a
+            ./gradlew assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon
           else
-            ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+            ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
           fi
 
       - name: Upload APK Artifact
