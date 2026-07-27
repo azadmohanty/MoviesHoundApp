@@ -2,8 +2,13 @@ import { Buffer } from 'buffer';
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
 import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
+import { getLiveDomain } from './resolver';
 
-const BASE_DOMAIN = 'https://vegamovies.navy';
+/**
+ * Dynamic domain lookup for VegaMovies. Always uses getLiveDomain('vegamovies').
+ */
+export const getVegaBaseDomain = (): string => getLiveDomain('vegamovies');
+const BASE_DOMAIN = getLiveDomain('vegamovies');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 /**

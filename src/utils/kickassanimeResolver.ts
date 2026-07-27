@@ -1,17 +1,22 @@
 /**
+ * ============================================================================
  * kickassanimeResolver.ts
+ * ============================================================================
+ * AGENT GUIDELINES:
+ * All domain lookups in this file MUST use `getLiveDomain('kickassanime')` or
+ * `getLiveDomainAsync('kickassanime')` from `./resolver`.
+ * Do NOT use hardcoded static domain strings!
  *
- * Dedicated resolver for KickAssAnime (Subbed & Dubbed Anime).
  * Handles search, episode resolution, HLS master playlist extraction,
- * and multi-language subtitle tracks.
+ * and multi-language subtitle tracks for KickAssAnime.
+ * ============================================================================
  */
 
 import { Buffer } from 'buffer';
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { findFuzzyTitleMatches, sanitizeSearchQuery } from './FuzzyMatcher';
-import { getResolvedDomainKey } from './resolver';
+import { getLiveDomain, getLiveDomainAsync } from './resolver';
 
-const DEFAULT_BASE_DOMAIN = 'https://kaa.lt';
 const KAAST_BASE = 'https://kaast1.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
@@ -42,10 +47,10 @@ export interface KickAssEpisode {
 }
 
 /**
- * Searches KickAssAnime using dynamic domain resolution and fuzzy matching.
+ * Searches KickAssAnime using 100% dynamic domain resolution and fuzzy matching.
  */
 export async function searchKickAssAnime(query: string): Promise<KickAssAnimeItem[]> {
-  const baseDomain = getResolvedDomainKey('kickassanime', DEFAULT_BASE_DOMAIN);
+  const baseDomain = await getLiveDomainAsync('kickassanime');
   const cleanQuery = sanitizeSearchQuery(query);
 
   try {
@@ -110,10 +115,10 @@ export async function searchKickAssAnime(query: string): Promise<KickAssAnimeIte
 }
 
 /**
- * Loads episode list for a specific KickAssAnime slug.
+ * Loads episode list for a specific KickAssAnime slug using dynamic domain.
  */
 export async function loadKickAssAnimeEpisodes(slug: string): Promise<KickAssEpisode[]> {
-  const baseDomain = getResolvedDomainKey('kickassanime', DEFAULT_BASE_DOMAIN);
+  const baseDomain = await getLiveDomainAsync('kickassanime');
   const targetUrl = slug.startsWith('http') ? slug : `${baseDomain}/anime/${slug}`;
 
   try {
@@ -147,12 +152,12 @@ export async function loadKickAssAnimeEpisodes(slug: string): Promise<KickAssEpi
 }
 
 /**
- * Resolves direct HLS stream (.m3u8) and subtitle tracks from a KickAssAnime episode page.
+ * Resolves direct HLS stream (.m3u8) and subtitle tracks from a KickAssAnime episode page using dynamic domain.
  */
 export async function resolveKickAssAnimeStream(
   episodeUrl: string
 ): Promise<ResolvedStreamResult | null> {
-  const baseDomain = getResolvedDomainKey('kickassanime', DEFAULT_BASE_DOMAIN);
+  const baseDomain = await getLiveDomainAsync('kickassanime');
 
   try {
     const response = await fetch(episodeUrl, {

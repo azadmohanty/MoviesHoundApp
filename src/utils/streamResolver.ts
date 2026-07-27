@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getLiveDomain } from './resolver';
 import { resolveFzMoviesStream } from './fzmoviesResolver';
 import { resolveMovieBoxStream } from './movieboxResolver';
 import { resolveVegaMovies480pStream } from './vegamoviesResolver';
@@ -101,20 +102,8 @@ export const resolveStreamUrl = async (
     if (serverIndex === 1) {
       if (!title) return null;
 
-      let liveVegaDomain = 'https://vegamovies.navy';
-      let liveRogDomain = 'https://rogmovies.rest';
-      try {
-        const cached = await AsyncStorage.getItem('@domains_cache');
-        if (cached) {
-          const { domains } = JSON.parse(cached);
-          if (domains && domains.vegamovies) {
-            liveVegaDomain = domains.vegamovies;
-          }
-          if (domains && domains.rogmovies) {
-            liveRogDomain = domains.rogmovies;
-          }
-        }
-      } catch (e) {}
+      const liveVegaDomain = getLiveDomain('vegamovies');
+      const liveRogDomain = getLiveDomain('rogmovies');
 
       const vegaStream = await resolveVegaMovies480pStream(
         title,
