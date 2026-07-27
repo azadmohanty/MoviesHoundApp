@@ -12,6 +12,7 @@
       }
     },
     "production": {
+      "channel": "main",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
