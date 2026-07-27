@@ -24,6 +24,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import * as WebBrowser from 'expo-web-browser';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Updates from 'expo-updates';
 import { getDeviceTopInset, updateDeviceTopInset, initSafeAreaCache } from '../utils/SafeAreaCache';
 import { triggerLightHaptic, triggerMediumHaptic, triggerSuccessHaptic, triggerSelectionHaptic } from '../utils/HapticsHelper';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -262,6 +263,21 @@ export default function HomeScreen({ onNavigateToDownloader }: HomeScreenProps =
       loadSettingsAndHistory();
     });
     loadDomains();
+
+    // Auto-fetch & reload on OTA update
+    async function checkOtaOnStartup() {
+      try {
+        if (!Updates.isEnabled) return;
+        const update = await Updates.checkForUpdateAsync();
+        if (update.isAvailable) {
+          await Updates.fetchUpdateAsync();
+          await Updates.reloadAsync();
+        }
+      } catch (e) {
+        console.warn('[OTA] Check error:', e);
+      }
+    }
+    checkOtaOnStartup();
 
     // Subscribe to storage changes for real-time cross-screen sync
     const unsubscribe = subscribeStorageChanges(() => {
