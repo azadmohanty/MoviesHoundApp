@@ -169,11 +169,23 @@ export async function getVegaMoviesQualityOptions(
 
   if (onLog) onLog(`VegaMovies: ${hits.length} raw search hits found. Pre-filtering...`);
 
+  const cleanTargetImdb = targetImdbId
+    ? targetImdbId.trim().toLowerCase().match(/tt\d{7,8}/)?.[0]
+    : undefined;
+
   const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
 
-  // Step 1: Pre-filter by media type & title score
+  // Step 1: Pre-filter & Rank Candidate Hits
   let candidateHits = hits.filter((hit: any) => {
     const postTitle = hit.document?.post_title || '';
+    const docImdb = hit.document?.imdb_id?.toString().toLowerCase().match(/tt\d{7,8}/)?.[0];
+
+    // Layer 1: Golden Search JSON IMDb Override
+    if (cleanTargetImdb && docImdb && cleanTargetImdb === docImdb) {
+      if (onLog) onLog(`VegaMovies: 🌟 100% Golden Search JSON IMDb Match (${cleanTargetImdb})`);
+      return true;
+    }
+
     const score = calculateMatchConfidence(queryTitle, postTitle, targetYear);
     if (score < 45) return false;
 
@@ -200,23 +212,32 @@ export async function getVegaMoviesQualityOptions(
     });
   }
 
-  // Step 3: Exact Year Priority Rule
-  if (numTargetYear && candidateHits.length > 0) {
+  // Step 3: Progressive Release Year Filter
+  // - SKIPPED FOR TV SERIES (TV seasons span multiple years)
+  // - SKIPPED IF GOLDEN IMDB MATCH IS PRESENT
+  // - ENFORCED ONLY FOR MOVIES WITHOUT IMDB MATCH
+  if (!isTvTarget && numTargetYear && candidateHits.length > 0) {
     const exactYearHits = candidateHits.filter((hit: any) => {
+      const docImdb = hit.document?.imdb_id?.toString().toLowerCase().match(/tt\d{7,8}/)?.[0];
+      if (cleanTargetImdb && docImdb && cleanTargetImdb === docImdb) return true;
+
       const postTitle = hit.document?.post_title || '';
       const postYearMatch = postTitle.match(/\b(19\d\d|20\d\d)\b/);
       if (postYearMatch) {
         return parseInt(postYearMatch[1], 10) === numTargetYear;
       }
-      return false;
+      return true;
     });
 
     if (exactYearHits.length > 0) {
-      if (onLog) onLog(`VegaMovies: Exact year match (${numTargetYear}) found! Using exact hits.`);
+      if (onLog) onLog(`VegaMovies: Movie exact year match (${numTargetYear}) found!`);
       candidateHits = exactYearHits;
     } else {
-      // Fallback: year tolerance (± 1)
+      // Fallback: ±1 year tolerance for movies
       candidateHits = candidateHits.filter((hit: any) => {
+        const docImdb = hit.document?.imdb_id?.toString().toLowerCase().match(/tt\d{7,8}/)?.[0];
+        if (cleanTargetImdb && docImdb && cleanTargetImdb === docImdb) return true;
+
         const postTitle = hit.document?.post_title || '';
         const postYearMatch = postTitle.match(/\b(19\d\d|20\d\d)\b/);
         if (postYearMatch) {
@@ -228,9 +249,15 @@ export async function getVegaMoviesQualityOptions(
     }
   }
 
-  if (candidateHits.length === 0) {
-    if (onLog) onLog('VegaMovies: 0 candidates passed year & media-type filter');
-    return [];
+  // Safety Fallback: If strict filtering left 0 hits, use raw hits before year filter
+  if (candidateHits.length === 0 && hits.length > 0) {
+    if (onLog) onLog('VegaMovies: Safety fallback to initial title matches.');
+    candidateHits = hits.filter((h: any) => {
+      const t = h.document?.post_title || '';
+      const isTvPost = /season|s0\d|series|episodes|complete/i.test(t);
+      return isTvTarget ? isTvPost : !isTvPost;
+    });
+    if (candidateHits.length === 0) candidateHits = hits;
   }
 
   const topHits = candidateHits.slice(0, 3);

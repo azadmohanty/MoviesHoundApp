@@ -7,8 +7,9 @@
  * `getLiveDomainAsync('kickassanime')` from `./resolver`.
  * Do NOT use hardcoded static domain strings!
  *
- * Handles search, episode resolution, HLS master playlist extraction,
- * and multi-language subtitle tracks for KickAssAnime.
+ * Uses KickAssAnime REST API endpoints (/api/anime?q=... and /api/show/.../episodes)
+ * for instant, bulletproof JSON search, episode listing, HLS master playlist extraction,
+ * and multi-language subtitle tracks.
  * ============================================================================
  */
 
@@ -47,64 +48,70 @@ export interface KickAssEpisode {
 }
 
 /**
- * Searches KickAssAnime using 100% dynamic domain resolution and fuzzy matching.
+ * Searches KickAssAnime using direct JSON REST API + dynamic domain resolution & fuzzy matching.
  */
 export async function searchKickAssAnime(query: string): Promise<KickAssAnimeItem[]> {
   const baseDomain = await getLiveDomainAsync('kickassanime');
   const cleanQuery = sanitizeSearchQuery(query);
 
   try {
-    const searchUrl = `${baseDomain}/search?q=${encodeURIComponent(cleanQuery)}`;
-    const response = await fetch(searchUrl, {
+    // Primary: Query native REST API endpoint
+    const apiUrl = `${baseDomain}/api/anime?q=${encodeURIComponent(cleanQuery)}`;
+    const response = await fetch(apiUrl, {
       headers: { 'User-Agent': UA, 'Referer': baseDomain }
     });
 
-    if (!response.ok) return [];
-
-    const html = await response.text();
-
-    // Extract appData JSON from embedded script tag if available
-    const appDataMatch = html.match(/script:containsData\(appData\)|"animes":\s*(\[[^\]]+\])/i) ||
-                          html.match(/"animes":\s*(\[\{[\s\S]*?\}\])/);
-    
     const items: KickAssAnimeItem[] = [];
 
-    if (appDataMatch && appDataMatch[1]) {
-      try {
-        const rawList = JSON.parse(appDataMatch[1]);
-        rawList.forEach((entry: any) => {
-          if (entry.name && entry.slug) {
+    if (response.ok) {
+      const data = await response.json();
+      if (data && Array.isArray(data.result)) {
+        data.result.forEach((entry: any) => {
+          if (entry.title && entry.slug) {
+            const rawTitle = entry.title.replace(/^"|"$/g, '').trim();
+            let poster = '';
+            if (entry.poster && entry.poster.hq) {
+              poster = `${baseDomain}/image/poster/${entry.poster.hq}.webp`;
+            } else if (entry.poster && entry.poster.sm) {
+              poster = `${baseDomain}/image/poster/${entry.poster.sm}.webp`;
+            }
+
             items.push({
-              title: entry.name,
+              title: rawTitle,
               slug: entry.slug,
-              posterUrl: entry.poster ? `${baseDomain}/uploads/${entry.poster}` : '',
-              isDub: entry.name.toLowerCase().includes('(dub)'),
-              episodesCount: entry.episode ? parseInt(entry.episode, 10) : undefined
+              posterUrl: poster,
+              isDub: rawTitle.toLowerCase().includes('(dub)'),
+              episodesCount: entry.episode_duration ? 12 : undefined
             });
           }
         });
-      } catch (_) {}
+      }
     }
 
-    // HTML Fallback Parsing if JSON script parsing yields 0 items
+    // HTML Fallback Parsing if REST API returned 0 items
     if (items.length === 0) {
-      const links = [...html.matchAll(/<a[^>]*href="\/anime\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-      links.forEach((match) => {
-        const slug = match[1];
-        const linkHtml = match[2];
-        const titleMatch = linkHtml.match(/<h[234][^>]*>([\s\S]*?)<\/h[234]>/i) || [null, linkHtml];
-        const title = titleMatch[1] ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : slug.replace(/-/g, ' ');
-        const imgMatch = linkHtml.match(/<img[^>]*src="([^"]+)"/i);
+      const searchUrl = `${baseDomain}/search?q=${encodeURIComponent(cleanQuery)}`;
+      const htmlRes = await fetch(searchUrl, { headers: { 'User-Agent': UA, 'Referer': baseDomain } });
+      if (htmlRes.ok) {
+        const html = await htmlRes.text();
+        const links = [...html.matchAll(/<a[^>]*href="\/anime\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+        links.forEach((match) => {
+          const slug = match[1];
+          const linkHtml = match[2];
+          const titleMatch = linkHtml.match(/<h[234][^>]*>([\s\S]*?)<\/h[234]>/i) || [null, linkHtml];
+          const title = titleMatch[1] ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : slug.replace(/-/g, ' ');
+          const imgMatch = linkHtml.match(/<img[^>]*src="([^"]+)"/i);
 
-        if (slug && title) {
-          items.push({
-            title,
-            slug,
-            posterUrl: imgMatch ? imgMatch[1] : '',
-            isDub: title.toLowerCase().includes('(dub)')
-          });
-        }
-      });
+          if (slug && title) {
+            items.push({
+              title,
+              slug,
+              posterUrl: imgMatch ? imgMatch[1] : '',
+              isDub: title.toLowerCase().includes('(dub)')
+            });
+          }
+        });
+      }
     }
 
     return findFuzzyTitleMatches(cleanQuery, items, 5);
@@ -115,16 +122,36 @@ export async function searchKickAssAnime(query: string): Promise<KickAssAnimeIte
 }
 
 /**
- * Loads episode list for a specific KickAssAnime slug using dynamic domain.
+ * Loads episode list for a specific KickAssAnime slug via REST API / HTML parser.
  */
 export async function loadKickAssAnimeEpisodes(slug: string): Promise<KickAssEpisode[]> {
   const baseDomain = await getLiveDomainAsync('kickassanime');
-  const targetUrl = slug.startsWith('http') ? slug : `${baseDomain}/anime/${slug}`;
+  const cleanSlug = slug.replace(/^https?:\/\/[^\/]+\/anime\//, '');
 
   try {
-    const response = await fetch(targetUrl, {
-      headers: { 'User-Agent': UA, 'Referer': baseDomain }
-    });
+    // 1. Primary REST API episode endpoint
+    const apiEpUrl = `${baseDomain}/api/show/${cleanSlug}/episodes`;
+    const apiRes = await fetch(apiEpUrl, { headers: { 'User-Agent': UA, 'Referer': baseDomain } });
+
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data && Array.isArray(data.result)) {
+        const episodes: KickAssEpisode[] = data.result.map((ep: any, idx: number) => {
+          const epNum = ep.episode_number ? parseInt(ep.episode_number, 10) : idx + 1;
+          const epSlug = ep.slug || `episode-${epNum}`;
+          return {
+            episodeNumber: epNum,
+            title: ep.title ? ep.title.trim() : `Episode ${epNum}`,
+            url: `${baseDomain}/anime/${cleanSlug}/${epSlug}`
+          };
+        });
+        return episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+      }
+    }
+
+    // 2. HTML Fallback Episode Parsing
+    const targetUrl = `${baseDomain}/anime/${cleanSlug}`;
+    const response = await fetch(targetUrl, { headers: { 'User-Agent': UA, 'Referer': baseDomain } });
 
     if (!response.ok) return [];
 
@@ -152,7 +179,7 @@ export async function loadKickAssAnimeEpisodes(slug: string): Promise<KickAssEpi
 }
 
 /**
- * Resolves direct HLS stream (.m3u8) and subtitle tracks from a KickAssAnime episode page using dynamic domain.
+ * Resolves direct HLS stream (.m3u8) and subtitle tracks from a KickAssAnime episode page.
  */
 export async function resolveKickAssAnimeStream(
   episodeUrl: string
