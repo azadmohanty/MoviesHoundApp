@@ -10,24 +10,34 @@ import {
   Linking,
   Alert,
   Dimensions,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getDeviceTopInset } from '../utils/SafeAreaCache';
 import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '../utils/HapticsHelper';
-import { resolveAllDomains } from '../utils/resolver';
+import { resolveAllDomains, HARDCODED_FALLBACKS } from '../utils/resolver';
 import { resolveFzMoviesStream } from '../utils/fzmoviesResolver';
 import { sanitizeSearchQuery } from '../utils/FuzzyMatcher';
 import { getStorageString, saveDownloadItem } from '../utils/DatabaseStorage';
 
 // Shared models & site resolvers
-import { ScrapedQualityOption, ResolvedStreamResult } from '../utils/resolverTypes';
+import { ScrapedQualityOption, ResolvedStreamResult, SearchArticleCard } from '../utils/resolverTypes';
 import {
   getVegaMoviesQualityOptions,
+  searchVegaMoviesRawCards,
+  parseVegaMoviesArticle,
   resolveVegaMoviesLocker,
   fetchVegaMoviesEpisodes,
   resolveVegaMoviesUnlockedPage,
   SeriesEpisodeItem,
 } from '../utils/vegamoviesResolver';
+import {
+  getMoviesModQualityOptions,
+  searchMoviesModRawCards,
+  parseMoviesModArticle,
+  resolveMoviesModLocker,
+  fetchMoviesModEpisodes,
+} from '../utils/moviesmodResolver';
 import {
   getRogMoviesQualityOptions,
   resolveRogMoviesLocker,
@@ -35,17 +45,11 @@ import {
   resolveRogMoviesUnlockedPage,
 } from '../utils/rogmoviesResolver';
 import {
-  getMoviesModQualityOptions,
-  resolveMoviesModLocker,
-  fetchMoviesModEpisodes,
-} from '../utils/moviesmodResolver';
-import {
   getTopMoviesQualityOptions,
   resolveTopMoviesLocker,
   fetchTopMoviesEpisodes,
 } from '../utils/topmoviesResolver';
-import { searchBollyflix, parseBollyflixArticle, resolveBollyflixLocker } from '../utils/bollyflixResolver';
-import { HARDCODED_FALLBACKS } from '../utils/resolver';
+import { resolveBollyflixLocker } from '../utils/bollyflixResolver';
 
 interface DownloaderScreenProps {
   initialSearchQuery?: string;
@@ -59,18 +63,27 @@ interface DownloaderScreenProps {
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const PROVIDER_COLORS: Record<string, string> = {
-  vegamovies: '#FFE500', // Yellow (VegaMovies / RogMovies twin family)
-  rogmovies: '#FFE500',  // Yellow (VegaMovies / RogMovies twin family)
-  moviesmod: '#00E5FF',  // Cyan (MoviesMod / TopMovies twin family)
-  topmovies: '#00E5FF',  // Cyan (MoviesMod / TopMovies twin family)
+  vegamovies: '#FFD700', // Gold
+  rogmovies: '#FFD700',  // Gold
+  moviesmod: '#00E5FF',  // Cyan
+  topmovies: '#00E5FF',  // Cyan
   fzmovies: '#00FF66',   // Matrix Green
-  bollyflix: '#FF0055',  // Neon Magenta
+  bollyflix: '#FF2D55',  // Crimson
 };
 
 function getProviderColor(siteKey?: string): string {
-  if (!siteKey) return '#FFE500';
-  return PROVIDER_COLORS[siteKey.toLowerCase()] || '#FFE500';
+  if (!siteKey) return '#FFD700';
+  return PROVIDER_COLORS[siteKey.toLowerCase()] || '#FFD700';
 }
+
+interface CachedSearchResult {
+  options: ScrapedQualityOption[];
+  rawCards: SearchArticleCard[];
+  providerStatus: Record<string, { count: number; status: 'loading' | 'done' | 'error' }>;
+  timestamp: number;
+}
+
+const IN_MEMORY_CACHE = new Map<string, CachedSearchResult>();
 
 export default function DownloaderScreen({
   initialSearchQuery = '',
@@ -81,29 +94,33 @@ export default function DownloaderScreen({
   searchTrigger = 0,
 }: DownloaderScreenProps) {
   const [query, setQuery] = useState(initialSearchQuery);
+  const [category, setCategory] = useState<'hollywood' | 'bollywood'>(initialIsBollywood ? 'bollywood' : 'hollywood');
   const [isSearching, setIsSearching] = useState(false);
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [logsExpanded, setLogsExpanded] = useState(false);
 
-  // Filter & Grouping States
-  const [selectedQuality, setSelectedQuality] = useState<'480p' | '720p' | '1080p' | '4K'>('720p');
+  // Filter & Grouping States (480p, 720p default, 1080p, 2K, 4K)
+  const [selectedQuality, setSelectedQuality] = useState<'480p' | '720p' | '1080p' | '2K' | '4K'>('720p');
   const [seriesMode, setSeriesMode] = useState<'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP'>('SINGLE_EPISODE');
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
   const [selectedSeriesProvider, setSelectedSeriesProvider] = useState<ScrapedQualityOption['siteKey'] | null>(null);
 
-  // Unified Extracted Options List
+  // Parsed Stream Options & Raw Discovered Cards
   const [options, setOptions] = useState<ScrapedQualityOption[]>([]);
+  const [rawCards, setRawCards] = useState<SearchArticleCard[]>([]);
+  const [rawTrayExpanded, setRawTrayExpanded] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  // Live Scraper Status Pills
+  const [providerStatus, setProviderStatus] = useState<Record<string, { count: number; status: 'loading' | 'done' | 'error' }>>({});
 
   // Web Series Episode Sub-Scraper State
   const [episodesLoading, setEpisodesLoading] = useState(false);
   const [episodesList, setEpisodesList] = useState<SeriesEpisodeItem[]>([]);
-  const [selectedEpUrl, setSelectedEpUrl] = useState<string | null>(null);
 
   const prevTriggerRef = useRef(0);
 
-  // React to new queries pushed from HomeScreen via searchTrigger
   useEffect(() => {
     if (searchTrigger > 0 && searchTrigger !== prevTriggerRef.current && initialSearchQuery) {
       prevTriggerRef.current = searchTrigger;
@@ -112,10 +129,9 @@ export default function DownloaderScreen({
     }
   }, [searchTrigger]);
 
-  // Initial mount auto-search & default quality preference load
   useEffect(() => {
     getStorageString('@default_quality', '720p').then((q) => {
-      if (q && ['480p', '720p', '1080p', '4K'].includes(q)) {
+      if (q && ['480p', '720p', '1080p', '2K', '4K'].includes(q)) {
         setSelectedQuality(q as any);
       }
     });
@@ -132,52 +148,58 @@ export default function DownloaderScreen({
 
   const resetState = () => {
     setOptions([]);
+    setRawCards([]);
     setEpisodesList([]);
     setStatusLog([]);
+    setProviderStatus({});
+    setRawTrayExpanded(false);
   };
 
-  const handleStartScrape = async (overrideQuery?: string) => {
+  const handleStartScrape = async (overrideQuery?: string, overrideCategory?: 'hollywood' | 'bollywood') => {
     const activeQ = overrideQuery || query;
+    const activeCat = overrideCategory || category;
     const cleanQ = sanitizeSearchQuery(activeQ);
     if (!cleanQ) {
       Alert.alert('Search Required', 'Please enter a title to search.');
       return;
     }
 
+    const cacheKey = `${activeCat}:${cleanQ.toLowerCase()}`;
+    const cached = IN_MEMORY_CACHE.get(cacheKey);
+
+    // 0ms In-Memory Cache Check
+    if (cached && Date.now() - cached.timestamp < 1000 * 60 * 15) {
+      setOptions(cached.options);
+      setRawCards(cached.rawCards);
+      setProviderStatus(cached.providerStatus);
+      addLog(`Loaded cached results for "${cleanQ}" (0ms).`);
+      if (cached.options.length === 0 && cached.rawCards.length > 0) {
+        setRawTrayExpanded(true);
+      }
+      return;
+    }
+
     triggerLightHaptic();
     setIsSearching(true);
     resetState();
-    addLog(`Searching options for "${cleanQ}"...`);
-
-    if (cleanQ.toLowerCase() === 'silo') {
-      addLog('Hardcoded demo fallback triggered');
-      fetch('https://raw.githubusercontent.com/azadmohanty/MoviesHoundApp/main/demo_silo.json')
-        .then((res) => res.json())
-        .then((data) => {
-          if (Array.isArray(data) && data.length > 0) {
-            setOptions(data);
-            addLog(`Loaded ${data.length} fallback options.`);
-          }
-        })
-        .catch(() => {});
-    }
+    addLog(`Starting AI scraper for "${cleanQ}" [${activeCat.toUpperCase()}]...`);
 
     try {
       const [disabledJson, timeoutStr] = await Promise.all([
         getStorageString('@disabled_providers', '[]'),
-        getStorageString('@scraper_timeout', '6000'),
+        getStorageString('@scraper_timeout', '7000'),
       ]);
 
       let disabledList: string[] = [];
       try { disabledList = JSON.parse(disabledJson || '[]'); } catch (e) {}
-      const timeoutMs = parseInt(timeoutStr || '6000', 10) || 6000;
+      const timeoutMs = parseInt(timeoutStr || '7000', 10) || 7000;
 
-      // FzMovies direct MP4 fast lane
-      if (initialMediaType === 'movie' && !disabledList.includes('fzmovies')) {
+      // FzMovies direct MP4 fast lane (Hollywood Movies)
+      if (activeCat === 'hollywood' && initialMediaType === 'movie' && !disabledList.includes('fzmovies')) {
         resolveFzMoviesStream(cleanQ)
           .then((fzRes) => {
             if (fzRes && fzRes.url) {
-              addLog('FzMovies: direct MP4 URL found');
+              addLog('FzMovies: Direct MP4 found');
               setOptions((prev) => [
                 {
                   id: `fz-${Date.now()}`,
@@ -210,48 +232,18 @@ export default function DownloaderScreen({
       };
 
       const scraperPromises: Promise<ScrapedQualityOption[]>[] = [];
+      const rawCardPromises: Promise<SearchArticleCard[]>[] = [];
+      const currentStatus: Record<string, { count: number; status: 'loading' | 'done' | 'error' }> = {};
 
-      if (initialIsBollywood) {
-        const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies;
-        const topDomain = liveDomains.topmovies || 'https://moviesleech.asia';
-
-        if (!disabledList.includes('rogmovies')) {
-          addLog(`Executing RogMovies (Bollywood) search on ${rogDomain}...`);
-          scraperPromises.push(
-            getRogMoviesQualityOptions(
-              cleanQ,
-              initialYear,
-              initialImdbId,
-              initialMediaType,
-              rogDomain,
-              'ROGMOVIES',
-              createController(),
-              (msg) => addLog(msg)
-            )
-          );
-        }
-
-        if (!disabledList.includes('topmovies')) {
-          addLog(`Executing TopMovies (Bollywood) search on ${topDomain}...`);
-          scraperPromises.push(
-            getTopMoviesQualityOptions(
-              cleanQ,
-              initialYear,
-              initialImdbId,
-              initialMediaType,
-              topDomain,
-              'TOPMOVIES',
-              createController(),
-              (msg) => addLog(msg)
-            )
-          );
-        }
-      } else {
+      if (activeCat === 'hollywood') {
         const vegaDomain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
-        const moviesModDomain = liveDomains.moviesmod || 'https://moviesmod.at';
+        const moviesModDomain = liveDomains.moviesmod || 'https://moviesmod.zone';
 
+        // 1. VegaMovies (Hollywood)
         if (!disabledList.includes('vegamovies')) {
-          addLog(`Executing VegaMovies (Hollywood) search on ${vegaDomain}...`);
+          currentStatus.vegamovies = { count: 0, status: 'loading' };
+          setProviderStatus({ ...currentStatus });
+
           scraperPromises.push(
             getVegaMoviesQualityOptions(
               cleanQ,
@@ -262,12 +254,23 @@ export default function DownloaderScreen({
               'VEGAMOVIES',
               createController(),
               (msg) => addLog(msg)
-            )
+            ).then((res) => {
+              currentStatus.vegamovies = { count: res.length, status: res.length > 0 ? 'done' : 'error' };
+              setProviderStatus({ ...currentStatus });
+              return res;
+            })
+          );
+
+          rawCardPromises.push(
+            searchVegaMoviesRawCards(cleanQ, vegaDomain, createController())
           );
         }
 
+        // 2. MoviesMod (Hollywood)
         if (!disabledList.includes('moviesmod')) {
-          addLog(`Executing MoviesMod (Hollywood) search on ${moviesModDomain}...`);
+          currentStatus.moviesmod = { count: 0, status: 'loading' };
+          setProviderStatus({ ...currentStatus });
+
           scraperPromises.push(
             getMoviesModQualityOptions(
               cleanQ,
@@ -278,17 +281,83 @@ export default function DownloaderScreen({
               'MOVIESMOD',
               createController(),
               (msg) => addLog(msg)
-            )
+            ).then((res) => {
+              currentStatus.moviesmod = { count: res.length, status: res.length > 0 ? 'done' : 'error' };
+              setProviderStatus({ ...currentStatus });
+              return res;
+            })
+          );
+
+          rawCardPromises.push(
+            searchMoviesModRawCards(cleanQ, moviesModDomain, createController())
+          );
+        }
+      } else {
+        // Bollywood Section (RogMovies + TopMovies)
+        const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies;
+        const topDomain = liveDomains.topmovies || 'https://moviesleech.asia';
+
+        if (!disabledList.includes('rogmovies')) {
+          currentStatus.rogmovies = { count: 0, status: 'loading' };
+          setProviderStatus({ ...currentStatus });
+
+          scraperPromises.push(
+            getRogMoviesQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              rogDomain,
+              'ROGMOVIES',
+              createController(),
+              (msg) => addLog(msg)
+            ).then((res) => {
+              currentStatus.rogmovies = { count: res.length, status: res.length > 0 ? 'done' : 'error' };
+              setProviderStatus({ ...currentStatus });
+              return res;
+            })
+          );
+        }
+
+        if (!disabledList.includes('topmovies')) {
+          currentStatus.topmovies = { count: 0, status: 'loading' };
+          setProviderStatus({ ...currentStatus });
+
+          scraperPromises.push(
+            getTopMoviesQualityOptions(
+              cleanQ,
+              initialYear,
+              initialImdbId,
+              initialMediaType,
+              topDomain,
+              'TOPMOVIES',
+              createController(),
+              (msg) => addLog(msg)
+            ).then((res) => {
+              currentStatus.topmovies = { count: res.length, status: res.length > 0 ? 'done' : 'error' };
+              setProviderStatus({ ...currentStatus });
+              return res;
+            })
           );
         }
       }
 
-      const results = await Promise.allSettled(scraperPromises);
+      const [scraperResults, rawResults] = await Promise.all([
+        Promise.allSettled(scraperPromises),
+        Promise.allSettled(rawCardPromises),
+      ]);
 
       const allExtractedOptions: ScrapedQualityOption[] = [];
-      results.forEach((res) => {
+      scraperResults.forEach((res) => {
         if (res.status === 'fulfilled') {
           allExtractedOptions.push(...res.value);
+        }
+      });
+
+      const allRawCards: SearchArticleCard[] = [];
+      rawResults.forEach((res) => {
+        if (res.status === 'fulfilled') {
+          allRawCards.push(...res.value);
         }
       });
 
@@ -297,9 +366,58 @@ export default function DownloaderScreen({
       const sortedOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
 
       setOptions(sortedOptions);
-      addLog(`Total quality options available: ${sortedOptions.length}`);
+      setRawCards(allRawCards);
+
+      if (sortedOptions.length === 0 && allRawCards.length > 0) {
+        setRawTrayExpanded(true);
+        addLog(`Discovered ${allRawCards.length} raw posts. Tap any post below to scrape.`);
+      }
+
+      IN_MEMORY_CACHE.set(cacheKey, {
+        options: sortedOptions,
+        rawCards: allRawCards,
+        providerStatus: currentStatus,
+        timestamp: Date.now(),
+      });
+
+      addLog(`Done: ${sortedOptions.length} stream options | ${allRawCards.length} raw posts.`);
     } catch (err: any) {
-      addLog(`Scrape Error: ${err.message}`);
+      addLog(`Error: ${err.message}`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleManualScrapeArticle = async (card: SearchArticleCard) => {
+    triggerSelectionHaptic();
+    setIsSearching(true);
+    addLog(`Scraping selected post: "${card.title}" (${card.siteDisplayName})...`);
+
+    try {
+      let articleUrl = card.permalink;
+      const res = await fetch(articleUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      });
+      const html = await res.text();
+
+      let parsed: ScrapedQualityOption[] = [];
+      if (card.siteKey === 'vegamovies') {
+        parsed = parseVegaMoviesArticle(html, articleUrl);
+      } else if (card.siteKey === 'moviesmod') {
+        parsed = parseMoviesModArticle(html, articleUrl, 'MOVIESMOD');
+      }
+
+      if (parsed.length > 0) {
+        triggerSuccessHaptic();
+        setOptions(parsed);
+        setRawTrayExpanded(false);
+        addLog(`🎉 Extracted ${parsed.length} options from selected post!`);
+      } else {
+        Alert.alert('No Links Found', 'Could not find active download sections on this post.');
+      }
+    } catch (e: any) {
+      addLog(`Manual Scrape Error: ${e.message}`);
+      Alert.alert('Scrape Error', e.message);
     } finally {
       setIsSearching(false);
     }
@@ -308,7 +426,6 @@ export default function DownloaderScreen({
   const isSeries = options.some((o) => o.contentType !== 'MOVIE');
   const availableSeasons = Array.from(new Set(options.map((o) => o.seasonNumber || 1))).sort((a, b) => a - b);
 
-  // Auto-sync selectedSeason state to first available season if not present
   useEffect(() => {
     if (availableSeasons.length > 0 && !availableSeasons.includes(selectedSeason)) {
       setSelectedSeason(availableSeasons[0]);
@@ -322,7 +439,6 @@ export default function DownloaderScreen({
     return opt.contentType === seriesMode;
   });
 
-  // Extract available series providers for current season & quality
   const availableSeriesProviders = Array.from(
     new Set(
       options
@@ -339,11 +455,10 @@ export default function DownloaderScreen({
     (opt) => opt.qualityLabel === selectedQuality && opt.contentType === 'SINGLE_EPISODE' && opt.seasonNumber === selectedSeason && opt.siteKey === activeSeriesProvider
   ) || filteredOptions[0];
 
-  // Auto-fetch episodes when series mode is SINGLE_EPISODE
   useEffect(() => {
     if (isSeries && seriesMode === 'SINGLE_EPISODE' && activeSeriesOption) {
       setEpisodesLoading(true);
-      addLog(`Fetching episode list for Season ${selectedSeason} (${selectedQuality}) via ${activeSeriesOption.siteDisplayName}...`);
+      addLog(`Fetching Season ${selectedSeason} Episodes via ${activeSeriesOption.siteDisplayName}...`);
 
       let epFetcher = fetchVegaMoviesEpisodes;
       if (activeSeriesOption.siteKey === 'rogmovies') epFetcher = fetchRogMoviesEpisodes;
@@ -353,19 +468,18 @@ export default function DownloaderScreen({
       epFetcher(activeSeriesOption.targetUrl)
         .then((epList) => {
           setEpisodesList(epList);
-          addLog(`Extracted ${epList.length} episodes`);
+          addLog(`Extracted ${epList.length} episodes.`);
         })
         .finally(() => setEpisodesLoading(false));
     }
   }, [isSeries, seriesMode, selectedSeason, selectedQuality, activeSeriesOption?.targetUrl]);
 
-  const handleDownload = async (item: ScrapedQualityOption, action: 'download' | 'copy', customUrl?: string) => {
+  const handleDownload = async (item: ScrapedQualityOption, action: 'download' | 'copy' | 'stream', customUrl?: string) => {
     triggerSelectionHaptic();
-
     const targetUrl = customUrl || item.targetUrl;
 
     if (item.siteKey === 'fzmovies' || item.siteKey === 'moviebox') {
-      if (action === 'download') {
+      if (action === 'download' || action === 'stream') {
         saveDownloadItem({
           id: item.id || targetUrl,
           title: query || 'Downloaded File',
@@ -383,14 +497,15 @@ export default function DownloaderScreen({
 
     if (item.siteKey === 'vegamovies' || item.siteKey === 'rogmovies' || targetUrl.includes('vcloud') || targetUrl.includes('v-cloud')) {
       setResolvingId(item.id);
-      addLog(`Unlocking VCloud server page for ${item.siteDisplayName}...`);
+      addLog(`Unlocking VCloud page for ${item.siteDisplayName}...`);
       const unlockedUrl = item.siteKey === 'rogmovies'
         ? await resolveRogMoviesUnlockedPage(targetUrl)
         : await resolveVegaMoviesUnlockedPage(targetUrl);
       setResolvingId(null);
-      if (action === 'download') {
+
+      if (action === 'download' || action === 'stream') {
         triggerSuccessHaptic();
-        addLog('Unlocked VCloud page ready');
+        addLog('Unlocked page ready');
         saveDownloadItem({
           id: item.id || unlockedUrl,
           title: query || 'Downloaded File',
@@ -401,7 +516,7 @@ export default function DownloaderScreen({
         }).catch(() => {});
         Linking.openURL(unlockedUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
-        Alert.alert('Unlocked VCloud Server Link', unlockedUrl);
+        Alert.alert('Unlocked Server Link', unlockedUrl);
       }
       return;
     }
@@ -424,7 +539,7 @@ export default function DownloaderScreen({
     if (res.success && res.streamUrl) {
       triggerSuccessHaptic();
       addLog(`Resolved: ${res.providerName}`);
-      if (action === 'download') {
+      if (action === 'download' || action === 'stream') {
         saveDownloadItem({
           id: item.id || res.streamUrl,
           title: query || 'Downloaded File',
@@ -435,11 +550,11 @@ export default function DownloaderScreen({
         }).catch(() => {});
         Linking.openURL(res.streamUrl).catch(() => Alert.alert('Error', 'Could not open download URL.'));
       } else {
-        Alert.alert('Direct Download Link', res.streamUrl);
+        Alert.alert('Direct Link', res.streamUrl);
       }
     } else {
       addLog(`Failed: ${res.message || 'Locker offline'}`);
-      Alert.alert('Resolution Failed', res.message || 'Could not extract download URL. Locker may be offline.');
+      Alert.alert('Resolution Failed', res.message || 'Could not extract download URL.');
     }
   };
 
@@ -448,19 +563,56 @@ export default function DownloaderScreen({
       {/* ── HEADER ── */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Ionicons name="download-outline" size={18} color="#FFE500" />
+          <View style={styles.iconCircle}>
+            <Ionicons name="download" size={15} color="#FFD700" />
+          </View>
           <Text style={styles.headerTitle}>DOWNLOADER TERMINAL</Text>
         </View>
-        {isSearching && <ActivityIndicator size="small" color="#FFE500" />}
+        {isSearching && <ActivityIndicator size="small" color="#FFD700" />}
+      </View>
+
+      {/* ── SEGMENTED CATEGORY TABS (Sleek Glassmorphic) ── */}
+      <View style={styles.categoryWrap}>
+        <View style={styles.segmentedContainer}>
+          <TouchableOpacity
+            style={[styles.segmentBtn, category === 'hollywood' && styles.segmentBtnActive]}
+            onPress={() => {
+              triggerSelectionHaptic();
+              setCategory('hollywood');
+              if (query) handleStartScrape(query, 'hollywood');
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="film-outline" size={13} color={category === 'hollywood' ? '#0A0B0E' : 'rgba(255,255,255,0.6)'} />
+            <Text style={[styles.segmentBtnText, category === 'hollywood' && styles.segmentBtnTextActive]}>
+              HOLLYWOOD
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.segmentBtn, category === 'bollywood' && styles.segmentBtnActive]}
+            onPress={() => {
+              triggerSelectionHaptic();
+              setCategory('bollywood');
+              if (query) handleStartScrape(query, 'bollywood');
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="sparkles-outline" size={13} color={category === 'bollywood' ? '#0A0B0E' : 'rgba(255,255,255,0.6)'} />
+            <Text style={[styles.segmentBtnText, category === 'bollywood' && styles.segmentBtnTextActive]}>
+              BOLLYWOOD
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ── SEARCH BAR ── */}
       <View style={styles.searchRow}>
         <View style={styles.inputWrap}>
-          <Ionicons name="search-outline" size={16} color="rgba(255,255,255,0.35)" />
+          <Ionicons name="search-outline" size={16} color="rgba(255,255,255,0.4)" />
           <TextInput
             style={styles.input}
-            placeholder="Movie or series title..."
+            placeholder="Search movie or series title..."
             placeholderTextColor="rgba(255,255,255,0.3)"
             value={query}
             onChangeText={setQuery}
@@ -468,8 +620,8 @@ export default function DownloaderScreen({
             returnKeyType="search"
           />
           {query.length > 0 && (
-            <TouchableOpacity onPress={() => { setQuery(''); resetState(); }}>
-              <Ionicons name="close-circle" size={15} color="rgba(255,255,255,0.3)" />
+            <TouchableOpacity onPress={() => { setQuery(''); resetState(); }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.35)" />
             </TouchableOpacity>
           )}
         </View>
@@ -477,56 +629,79 @@ export default function DownloaderScreen({
           style={styles.scrapeBtn}
           onPress={() => handleStartScrape()}
           disabled={isSearching}
+          activeOpacity={0.8}
         >
           <Text style={styles.scrapeBtnText}>SCRAPE</Text>
         </TouchableOpacity>
       </View>
 
-      {/* ── QUALITY PILLS (always visible) ── */}
+      {/* ── PROVIDER TELEMETRY STATUS PILLS ── */}
+      {Object.keys(providerStatus).length > 0 && (
+        <View style={styles.statusPillsRow}>
+          {Object.entries(providerStatus).map(([pKey, pState]) => {
+            const pColor = getProviderColor(pKey);
+            return (
+              <View key={pKey} style={[styles.statusPill, { borderColor: `${pColor}40` }]}>
+                <View style={[styles.statusPillDot, { backgroundColor: pColor }]} />
+                <Text style={[styles.statusPillText, { color: pColor }]}>
+                  {pKey.toUpperCase()} {pState.status === 'loading' ? '⏳' : `(${pState.count})`}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {/* ── QUALITY FILTER PILLS (480p, 720p, 1080p, 2K, 4K) ── */}
       <View style={styles.qualityRow}>
-        {(['480p', '720p', '1080p', '4K'] as const).map((q) => (
+        {(['480p', '720p', '1080p', '2K', '4K'] as const).map((q) => (
           <TouchableOpacity
             key={q}
             style={[styles.qualityPill, selectedQuality === q && styles.qualityPillActive]}
             onPress={() => { triggerSelectionHaptic(); setSelectedQuality(q); }}
+            activeOpacity={0.7}
           >
             <Text style={[styles.qualityPillText, selectedQuality === q && styles.qualityPillTextActive]}>
-              {q}
+              {q === '720p' ? '⭐ 720p' : q}
             </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {/* ── SERIES MODE TOGGLE (only if series) ── */}
+      {/* ── SERIES MODE & SEASON CONTROLS ── */}
       {isSeries && (
         <View style={styles.seriesRow}>
-          {availableSeasons.length > 0 && availableSeasons.map((sn) => (
-            <TouchableOpacity
-              key={`s${sn}`}
-              style={[styles.modePill, selectedSeason === sn && styles.modePillActive]}
-              onPress={() => { triggerSelectionHaptic(); setSelectedSeason(sn); }}
-            >
-              <Text style={[styles.modePillText, selectedSeason === sn && styles.modePillTextActive]}>
-                S{sn}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          <View style={styles.divider} />
-          {(['SINGLE_EPISODE', 'SEASON_BATCH_ZIP'] as const).map((mode) => (
-            <TouchableOpacity
-              key={mode}
-              style={[styles.modePill, seriesMode === mode && styles.modePillActive]}
-              onPress={() => { triggerSelectionHaptic(); setSeriesMode(mode); }}
-            >
-              <Text style={[styles.modePillText, seriesMode === mode && styles.modePillTextActive]}>
-                {mode === 'SINGLE_EPISODE' ? 'EPISODES' : 'BATCH ZIP'}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          <View style={styles.seasonList}>
+            {availableSeasons.map((sn) => (
+              <TouchableOpacity
+                key={`s${sn}`}
+                style={[styles.seasonChip, selectedSeason === sn && styles.seasonChipActive]}
+                onPress={() => { triggerSelectionHaptic(); setSelectedSeason(sn); }}
+              >
+                <Text style={[styles.seasonChipText, selectedSeason === sn && styles.seasonChipTextActive]}>
+                  S{sn < 10 ? `0${sn}` : sn}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.modeToggleWrap}>
+            {(['SINGLE_EPISODE', 'SEASON_BATCH_ZIP'] as const).map((mode) => (
+              <TouchableOpacity
+                key={mode}
+                style={[styles.modeToggleBtn, seriesMode === mode && styles.modeToggleBtnActive]}
+                onPress={() => { triggerSelectionHaptic(); setSeriesMode(mode); }}
+              >
+                <Text style={[styles.modeToggleText, seriesMode === mode && styles.modeToggleTextActive]}>
+                  {mode === 'SINGLE_EPISODE' ? 'EPISODES' : 'BATCH ZIP'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
       )}
 
-      {/* ── MAIN SCROLL AREA ── */}
+      {/* ── MAIN CONTENT SCROLL ── */}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -539,11 +714,9 @@ export default function DownloaderScreen({
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionLabel}>
                 SEASON {selectedSeason} EPISODES  ·  {selectedQuality.toUpperCase()}
-                {activeSeriesOption ? `  ·  ${activeSeriesOption.siteDisplayName}` : ''}
               </Text>
             </View>
 
-            {/* Provider Switcher Pills if > 1 provider offers series links */}
             {availableSeriesProviders.length > 1 && (
               <View style={styles.providerSwitcherRow}>
                 {availableSeriesProviders.map((sk) => {
@@ -555,7 +728,7 @@ export default function DownloaderScreen({
                       key={`prov-pill-${sk}`}
                       style={[
                         styles.provPill,
-                        { borderColor: pColor },
+                        { borderColor: `${pColor}60` },
                         isActive && { backgroundColor: pColor },
                       ]}
                       onPress={() => {
@@ -573,20 +746,24 @@ export default function DownloaderScreen({
             )}
 
             {episodesLoading ? (
-              <ActivityIndicator size="small" color={getProviderColor(activeSeriesProvider || 'vegamovies')} style={{ marginVertical: 20 }} />
+              <ActivityIndicator size="small" color={getProviderColor(activeSeriesProvider || 'vegamovies')} style={{ marginVertical: 24 }} />
             ) : episodesList.length === 0 ? (
-              <Text style={styles.emptySubText}>No episodes found for this season</Text>
+              <View style={styles.emptyCard}>
+                <Ionicons name="film-outline" size={24} color="rgba(255,255,255,0.2)" />
+                <Text style={styles.emptySubText}>No episodes parsed for this quality. Try another provider or quality tier.</Text>
+              </View>
             ) : (
               <View style={styles.epGrid}>
                 {episodesList.map((ep) => (
                   <TouchableOpacity
                     key={`ep-${ep.episodeNumber}`}
-                    style={[styles.epButton, { borderColor: `${getProviderColor(activeSeriesProvider || 'vegamovies')}40` }]}
+                    style={[styles.epButton, { borderColor: `${getProviderColor(activeSeriesProvider || 'vegamovies')}35` }]}
                     onPress={() => {
                       if (activeSeriesOption) {
                         handleDownload(activeSeriesOption, 'download', ep.targetUrl);
                       }
                     }}
+                    activeOpacity={0.7}
                   >
                     <Text style={[styles.epBtnText, { color: getProviderColor(activeSeriesProvider || 'vegamovies') }]}>
                       EP {ep.episodeNumber < 10 ? `0${ep.episodeNumber}` : ep.episodeNumber}
@@ -601,10 +778,10 @@ export default function DownloaderScreen({
         {/* Season Batch Zip Cards & Movie Cards */}
         {(!isSeries || seriesMode === 'SEASON_BATCH_ZIP') && (
           filteredOptions.length === 0 && !isSearching && options.length > 0 ? (
-            <View style={styles.emptyState}>
-              <Ionicons name="search-outline" size={36} color="rgba(255,255,255,0.12)" />
+            <View style={styles.emptyCard}>
+              <Ionicons name="search-outline" size={28} color="rgba(255,255,255,0.2)" />
               <Text style={styles.emptyText}>No {selectedQuality} options found</Text>
-              <Text style={styles.emptySubText}>Try a different quality tier above</Text>
+              <Text style={styles.emptySubText}>Select a different quality above</Text>
             </View>
           ) : (
             (() => {
@@ -622,7 +799,6 @@ export default function DownloaderScreen({
 
                 return (
                   <View key={`group-${siteKey}`} style={styles.providerGroupWrap}>
-                    {/* Group Header Bar */}
                     <TouchableOpacity
                       style={[styles.groupHeader, { borderLeftColor: pColor }]}
                       onPress={() => {
@@ -638,48 +814,40 @@ export default function DownloaderScreen({
                         <Text style={[styles.groupTitle, { color: pColor }]}>
                           {displayName}
                         </Text>
-                        <View style={[styles.countBadge, { backgroundColor: `${pColor}20`, borderColor: `${pColor}50` }]}>
+                        <View style={[styles.countBadge, { backgroundColor: `${pColor}15`, borderColor: `${pColor}40` }]}>
                           <Text style={[styles.countBadgeText, { color: pColor }]}>
                             {groupItems.length} {groupItems.length === 1 ? 'OPTION' : 'OPTIONS'}
                           </Text>
                         </View>
                       </View>
                       {isCollapsible && (
-                        <View style={styles.groupHeaderRight}>
-                          <Text style={[styles.collapseHintText, { color: pColor }]}>
-                            {isCollapsed ? 'EXPAND' : 'COLLAPSE'}
-                          </Text>
-                          <Ionicons
-                            name={isCollapsed ? 'chevron-down' : 'chevron-up'}
-                            size={14}
-                            color={pColor}
-                          />
-                        </View>
+                        <Ionicons
+                          name={isCollapsed ? 'chevron-down' : 'chevron-up'}
+                          size={14}
+                          color="rgba(255,255,255,0.4)"
+                        />
                       )}
                     </TouchableOpacity>
 
-                    {/* Cards (rendered if not collapsed) */}
                     {!isCollapsed && groupItems.map((item) => {
                       const isResolving = resolvingId === item.id;
                       return (
                         <View key={item.id} style={[styles.providerCard, { borderLeftColor: pColor }]}>
-                          {/* Top Row: provider name + file size */}
                           <View style={styles.cardTopRow}>
                             <Text style={styles.providerName}>⚡ {item.siteDisplayName}</Text>
                             <Text style={[styles.fileSize, { color: pColor }]}>{item.fileSize}</Text>
                           </View>
 
-                          {/* Metadata: dot-separated single line */}
                           <Text style={styles.metaLine}>
                             {[item.ripFormat, item.codec, item.audioTracks].filter(Boolean).join('  ·  ')}
                           </Text>
 
-                          {/* Action Buttons */}
                           <View style={styles.actionRow}>
                             <TouchableOpacity
                               style={[styles.dlBtn, { backgroundColor: pColor }]}
                               onPress={() => handleDownload(item, 'download')}
                               disabled={isResolving}
+                              activeOpacity={0.8}
                             >
                               {isResolving ? (
                                 <ActivityIndicator size="small" color="#0A0A0C" />
@@ -688,11 +856,12 @@ export default function DownloaderScreen({
                               )}
                             </TouchableOpacity>
                             <TouchableOpacity
-                              style={[styles.copyBtn, { borderColor: `${pColor}50` }]}
+                              style={[styles.copyBtn, { borderColor: `${pColor}40` }]}
                               onPress={() => handleDownload(item, 'copy')}
                               disabled={isResolving}
+                              activeOpacity={0.7}
                             >
-                              <Text style={[styles.copyBtnText, { color: pColor }]}>🔗  COPY LINK</Text>
+                              <Text style={[styles.copyBtnText, { color: pColor }]}>🔗  COPY</Text>
                             </TouchableOpacity>
                           </View>
                         </View>
@@ -705,16 +874,88 @@ export default function DownloaderScreen({
           )
         )}
 
-        {/* Initial Empty State */}
-        {!isSearching && options.length === 0 && (
-          <View style={styles.emptyState}>
-            <Ionicons name="cloud-download-outline" size={44} color="rgba(255,255,255,0.1)" />
-            <Text style={styles.emptyText}>Downloader Terminal Ready</Text>
-            <Text style={styles.emptySubText}>Enter a title above and tap SCRAPE</Text>
+        {/* ── SMART RAW POSTS EXPLORER (MANUAL OVERRIDE TRAY) ── */}
+        {rawCards.length > 0 && (
+          <View style={styles.rawExplorerContainer}>
+            <TouchableOpacity
+              style={styles.rawExplorerHeader}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setRawTrayExpanded((v) => !v);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.rawHeaderLeft}>
+                <Ionicons name="sparkles" size={14} color="#00E5FF" />
+                <Text style={styles.rawExplorerTitle}>
+                  DISCOVERED POSTS ({rawCards.length})
+                </Text>
+              </View>
+              <View style={styles.rawHeaderRight}>
+                <Text style={styles.rawToggleText}>{rawTrayExpanded ? 'COLLAPSE' : 'SHOW ALL'}</Text>
+                <Ionicons
+                  name={rawTrayExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={14}
+                  color="#00E5FF"
+                />
+              </View>
+            </TouchableOpacity>
+
+            {rawTrayExpanded && (
+              <View style={styles.rawCardsList}>
+                {rawCards.map((card) => {
+                  const pColor = getProviderColor(card.siteKey);
+                  return (
+                    <View key={card.id} style={styles.rawCard}>
+                      {card.posterUrl ? (
+                        <Image source={{ uri: card.posterUrl }} style={styles.rawPoster} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.rawPosterFallback, { borderColor: `${pColor}30` }]}>
+                          <Ionicons name="film-outline" size={18} color={pColor} />
+                        </View>
+                      )}
+                      <View style={styles.rawCardDetails}>
+                        <View style={styles.rawCardBadgeRow}>
+                          <View style={[styles.rawSiteBadge, { backgroundColor: `${pColor}15`, borderColor: `${pColor}50` }]}>
+                            <Text style={[styles.rawSiteBadgeText, { color: pColor }]}>{card.siteDisplayName}</Text>
+                          </View>
+                          {card.seasonTags && card.seasonTags.length > 0 && (
+                            <View style={styles.rawSeasonBadge}>
+                              <Text style={styles.rawSeasonBadgeText}>
+                                {card.seasonTags.length > 1 ? `S${card.seasonTags[0]}-${card.seasonTags[card.seasonTags.length - 1]}` : `S${card.seasonTags[0]}`}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.rawCardTitle} numberOfLines={2}>{card.title}</Text>
+                        <TouchableOpacity
+                          style={[styles.rawScrapeBtn, { backgroundColor: pColor }]}
+                          onPress={() => handleManualScrapeArticle(card)}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.rawScrapeBtnText}>⚡ SCRAPE THIS POST</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
 
-        {/* ── SCRAPER LOGS (always at bottom, collapsible) ── */}
+        {/* Empty State */}
+        {!isSearching && options.length === 0 && rawCards.length === 0 && (
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="cloud-download-outline" size={32} color="rgba(255,255,255,0.2)" />
+            </View>
+            <Text style={styles.emptyStateTitle}>Terminal Ready</Text>
+            <Text style={styles.emptyStateSub}>Search any title above to extract direct links</Text>
+          </View>
+        )}
+
+        {/* Scraper Logs */}
         {statusLog.length > 0 && (
           <View style={styles.logBox}>
             <TouchableOpacity
@@ -723,7 +964,7 @@ export default function DownloaderScreen({
               activeOpacity={0.7}
             >
               <View style={styles.logHeaderLeft}>
-                <Ionicons name="terminal-outline" size={12} color="rgba(0,229,255,0.7)" />
+                <Ionicons name="terminal-outline" size={12} color="#00E5FF" />
                 <Text style={styles.logTitle}>SCRAPER LOGS</Text>
               </View>
               <Ionicons
@@ -751,350 +992,556 @@ export default function DownloaderScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0C',
+    backgroundColor: '#08090C',
   },
-
-  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.07)',
+    borderBottomColor: 'rgba(255,255,255,0.06)',
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  headerTitle: {
-    fontFamily: 'Ndot57',
-    fontSize: 24,
-    color: '#FFFFFF',
-    letterSpacing: 2,
+  iconCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255,215,0,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-
-  // Search
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  categoryWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  segmentedContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 6,
+  },
+  segmentBtnActive: {
+    backgroundColor: '#FFD700',
+  },
+  segmentBtnText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  segmentBtnTextActive: {
+    color: '#0A0B0E',
+    fontWeight: '800',
+  },
   searchRow: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
   },
   inputWrap: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
     gap: 8,
   },
   input: {
     flex: 1,
     color: '#FFFFFF',
-    fontFamily: 'NType82Mono',
-    fontSize: 12,
-    padding: 0,
+    fontSize: 13,
+    paddingVertical: 8,
   },
   scrapeBtn: {
-    backgroundColor: '#FFE500',
+    backgroundColor: '#FFD700',
+    borderRadius: 10,
     paddingHorizontal: 16,
-    paddingVertical: 9,
+    alignItems: 'center',
     justifyContent: 'center',
   },
   scrapeBtnText: {
-    fontFamily: 'Ndot57',
-    fontSize: 11,
-    color: '#0A0A0C',
+    color: '#0A0B0E',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
-
-  // Quality Pills
-  qualityRow: {
+  statusPillsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
-  },
-  qualityPill: {
-    flex: 1,
-    paddingVertical: 7,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'transparent',
-  },
-  qualityPillActive: {
-    borderColor: '#FFFFFF',
-    backgroundColor: '#FFFFFF',
-  },
-  qualityPillText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.5)',
-  },
-  qualityPillTextActive: {
-    color: '#0A0A0C',
-  },
-
-  // Series Mode Row
-  seriesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 6,
     gap: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
-  },
-  divider: {
-    width: 1,
-    height: 18,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    marginHorizontal: 4,
-  },
-  modePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  modePillActive: {
-    borderColor: '#FFE500',
-    backgroundColor: 'rgba(255,229,0,0.08)',
-  },
-  modePillText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 9,
-    color: 'rgba(255,255,255,0.45)',
-  },
-  modePillTextActive: {
-    color: '#FFE500',
-  },
-
-  // Episode Grid Section
-  episodeSection: {
-    marginBottom: 20,
-  },
-  sectionHeaderRow: {
-    marginBottom: 10,
-  },
-  providerSwitcherRow: {
-    flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 14,
   },
-  provPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
     borderWidth: 1,
     backgroundColor: 'rgba(255,255,255,0.02)',
   },
-  provPillText: {
-    fontFamily: 'NType82Mono',
+  statusPillDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  statusPillText: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  qualityRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    gap: 6,
+  },
+  qualityPill: {
+    flex: 1,
+    paddingVertical: 6,
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  qualityPillActive: {
+    borderColor: '#FFD700',
+    backgroundColor: '#FFD700',
+  },
+  qualityPillText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  qualityPillTextActive: {
+    color: '#0A0B0E',
+    fontWeight: '800',
+  },
+  seriesRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  seasonList: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  seasonChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  seasonChipActive: {
+    borderColor: '#00E5FF',
+    backgroundColor: 'rgba(0,229,255,0.15)',
+  },
+  seasonChipText: {
+    color: 'rgba(255,255,255,0.5)',
     fontSize: 10,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  seasonChipTextActive: {
+    color: '#00E5FF',
+    fontWeight: '800',
+  },
+  modeToggleWrap: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 6,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  modeToggleBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 5,
+  },
+  modeToggleBtnActive: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  modeToggleText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  modeToggleTextActive: {
+    color: '#FFFFFF',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 40,
+  },
+  episodeSection: {
+    marginBottom: 16,
+  },
+  sectionHeaderRow: {
+    marginBottom: 8,
+  },
+  sectionLabel: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  providerSwitcherRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 10,
+  },
+  provPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  provPillText: {
+    fontSize: 9,
+    fontWeight: '800',
   },
   epGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   epButton: {
-    width: (SCREEN_WIDTH - 56) / 3,
+    width: (SCREEN_WIDTH - 32 - 12) / 3,
     paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 8,
     borderWidth: 1,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
   },
   epBtnText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 10,
+    fontSize: 12,
+    fontWeight: '800',
   },
-
-  // Provider Groups & Accordions
   providerGroupWrap: {
-    marginBottom: 16,
+    marginBottom: 12,
   },
   groupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
     borderLeftWidth: 3,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 8,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    marginBottom: 6,
+    borderRadius: 4,
   },
   groupHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   providerDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   groupTitle: {
-    fontFamily: 'Ndot57',
-    fontSize: 13,
-    letterSpacing: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   countBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
     borderWidth: 1,
   },
   countBadgeText: {
-    fontFamily: 'NType82Mono',
     fontSize: 8,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  groupHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  collapseHintText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 9,
-    letterSpacing: 0.5,
-  },
-
-  // Scroll
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 40 },
-
-  // Provider cards
   providerCard: {
-    borderWidth: 1,
+    backgroundColor: '#0F1116',
+    borderRadius: 8,
+    padding: 10,
     borderLeftWidth: 3,
-    borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    padding: 14,
-    marginBottom: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.04)',
   },
   cardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 2,
   },
   providerName: {
-    fontFamily: 'NType82Mono',
-    fontSize: 12,
     color: '#FFFFFF',
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '800',
   },
   fileSize: {
-    fontFamily: 'NType82Mono',
     fontSize: 12,
-    color: '#FFE500',
+    fontWeight: '800',
   },
   metaLine: {
-    fontFamily: 'LetteraMono',
-    fontSize: 9,
     color: 'rgba(255,255,255,0.4)',
-    marginBottom: 12,
+    fontSize: 10,
+    marginBottom: 8,
   },
-
-  // Action buttons
   actionRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   dlBtn: {
-    flex: 2,
-    backgroundColor: '#FFE500',
-    paddingVertical: 9,
+    flex: 1,
+    paddingVertical: 7,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 6,
   },
   dlBtnText: {
-    fontFamily: 'NType82Mono',
+    color: '#0A0B0E',
     fontSize: 10,
-    color: '#0A0A0C',
-    fontWeight: '600',
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   copyBtn: {
     flex: 1,
-    paddingVertical: 9,
+    paddingVertical: 7,
     alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
   },
   copyBtnText: {
-    fontFamily: 'NType82Mono',
     fontSize: 10,
-    color: 'rgba(255,255,255,0.6)',
+    fontWeight: '800',
   },
-
-  // Empty state
-  emptyState: {
+  rawExplorerContainer: {
+    marginTop: 12,
+    marginBottom: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.25)',
+    backgroundColor: '#0A0E14',
+    overflow: 'hidden',
+  },
+  rawExplorerHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 50,
+    justifyContent: 'space-between',
+    padding: 10,
+    backgroundColor: 'rgba(0,229,255,0.08)',
+  },
+  rawHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rawExplorerTitle: {
+    color: '#00E5FF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  rawHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  rawToggleText: {
+    color: '#00E5FF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  rawCardsList: {
+    padding: 10,
     gap: 8,
   },
-  emptyText: {
-    fontFamily: 'NType82Mono',
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.3)',
+  rawCard: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: '#0F141D',
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
   },
-  emptySubText: {
-    fontFamily: 'LetteraMono',
+  rawPoster: {
+    width: 44,
+    height: 66,
+    borderRadius: 5,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  rawPosterFallback: {
+    width: 44,
+    height: 66,
+    borderRadius: 5,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  rawCardDetails: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  rawCardBadgeRow: {
+    flexDirection: 'row',
+    gap: 5,
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  rawSiteBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  rawSiteBadgeText: {
+    fontSize: 8,
+    fontWeight: '800',
+  },
+  rawSeasonBadge: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  rawSeasonBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  rawCardTitle: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 15,
+    marginBottom: 4,
+  },
+  rawScrapeBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 5,
+  },
+  rawScrapeBtnText: {
+    color: '#0A0B0E',
     fontSize: 9,
-    color: 'rgba(255,255,255,0.18)',
-  },
-
-  // Section label
-  sectionLabel: {
-    fontFamily: 'NType82Mono',
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.35)',
-    marginBottom: 10,
+    fontWeight: '800',
     letterSpacing: 0.5,
   },
-
-  // Logs
-  logBox: {
-    marginTop: 20,
+  emptyCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 24,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(0,229,255,0.12)',
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    padding: 12,
+    borderColor: 'rgba(255,255,255,0.04)',
+    gap: 6,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+    gap: 6,
+  },
+  emptyIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  emptyStateTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  emptyStateSub: {
+    color: 'rgba(255,255,255,0.3)',
+    fontSize: 11,
+  },
+  emptyText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  emptySubText: {
+    color: 'rgba(255,255,255,0.3)',
+    fontSize: 11,
+  },
+  logBox: {
+    marginTop: 16,
+    backgroundColor: '#050608',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
   },
   logHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   logHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   logTitle: {
-    fontFamily: 'NType82Mono',
+    color: '#00E5FF',
     fontSize: 9,
-    color: 'rgba(0,229,255,0.7)',
-    letterSpacing: 1,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   logLine: {
-    fontFamily: 'LetteraMono',
+    color: 'rgba(255,255,255,0.35)',
     fontSize: 9,
-    color: 'rgba(0,255,136,0.7)',
-    lineHeight: 14,
+    fontFamily: 'monospace',
+    lineHeight: 13,
   },
 });

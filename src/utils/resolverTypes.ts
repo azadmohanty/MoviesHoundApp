@@ -6,13 +6,15 @@ export interface SearchArticleCard {
   siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'topmovies' | 'bollyflix' | 'fzmovies' | 'moviebox';
   siteDisplayName: string;
   confidenceScore: number;
+  seasonTags?: number[];
+  audioTracks?: string;
 }
 
 export interface ScrapedQualityOption {
   id: string;
   siteKey: 'vegamovies' | 'rogmovies' | 'moviesmod' | 'topmovies' | 'bollyflix' | 'fzmovies' | 'moviebox';
   siteDisplayName: string;
-  qualityLabel: '480p' | '720p' | '1080p' | '4K';
+  qualityLabel: '480p' | '720p' | '1080p' | '2K' | '4K';
   ripFormat: string;       // e.g. "WEBRip", "WEB-DL", "BluRay IMAX"
   codec: string;           // e.g. "H.264", "HEVC 10Bit", "x265"
   fileSize: string;        // e.g. "1.5 GB" or "250MB/E"

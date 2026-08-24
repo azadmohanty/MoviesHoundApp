@@ -1,6 +1,6 @@
-import { ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
+import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
-import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
+import { aiClassifyPost, aiClassifyLink, aiExtractEpisodesFromPortal } from '../services/aiParserService';
 
 const DEFAULT_MOVIESMOD_DOMAIN = 'https://moviesmod.zone';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -107,7 +107,57 @@ export async function bypassUnblocked(url: string, signal?: AbortSignal): Promis
 }
 
 /**
- * 100% Empirical DOM Parser for MoviesMod main article page.
+ * Raw Search Cards Provider for the Raw Discovered Posts Explorer
+ */
+export async function searchMoviesModRawCards(
+  queryTitle: string,
+  baseDomain: string = DEFAULT_MOVIESMOD_DOMAIN,
+  signal?: AbortSignal
+): Promise<SearchArticleCard[]> {
+  const searchQuery = sanitizeSearchQuery(queryTitle);
+  const searchUrl = `${baseDomain}/search/${encodeURIComponent(searchQuery)}/page/1`;
+
+  try {
+    const res = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA } });
+    const html = await res.text();
+
+    const articleRegex = /<article[\s\S]*?>([\s\S]*?)<\/article>/gi;
+    const cards: SearchArticleCard[] = [];
+    let match;
+    let idx = 0;
+
+    while ((match = articleRegex.exec(html)) !== null) {
+      const content = match[1];
+      const titleMatch = /title="([^"]+)"/i.exec(content);
+      const hrefMatch = /href="([^"]+)"/i.exec(content);
+      const imgMatch = /(?:data-src|src)="([^"]+)"/i.exec(content);
+
+      if (titleMatch && hrefMatch) {
+        const postTitle = titleMatch[1].replace(/^Download\s+/i, '').trim();
+        const postMeta = aiClassifyPost(postTitle);
+
+        cards.push({
+          id: `mod-card-${idx++}-${Date.now()}`,
+          title: postTitle,
+          permalink: hrefMatch[1],
+          posterUrl: imgMatch ? imgMatch[1] : undefined,
+          siteKey: 'moviesmod',
+          siteDisplayName: 'MOVIESMOD',
+          confidenceScore: parseFloat(postMeta.confidence) * 100,
+          seasonTags: postMeta.seasons,
+          audioTracks: postMeta.audioTracks.join(', '),
+        });
+      }
+    }
+
+    return cards;
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Model-Driven DOM Parser for MoviesMod main article page.
  */
 export function parseMoviesModArticle(
   html: string,
@@ -126,25 +176,6 @@ export function parseMoviesModArticle(
     const headerText = match[1].replace(/<[^>]+>/g, '').trim();
     const sectionHtml = match[2];
 
-    if (!/480p|720p|1080p|2160p|4K/i.test(headerText)) return;
-
-    let qualityLabel: '480p' | '720p' | '1080p' | '4K' = '720p';
-    if (headerText.includes('480p')) qualityLabel = '480p';
-    else if (headerText.includes('1080p')) qualityLabel = '1080p';
-    else if (/2160p|4K/i.test(headerText)) qualityLabel = '4K';
-
-    const fullTagContext = `${headerText} ${mainTitle}`;
-    const codec = extractVideoCodec(headerText);
-    const ripFormat = extractRipFormat(fullTagContext);
-    const audioTracks = extractAudioTracks(fullTagContext);
-
-    const baseSizeMatch = headerText.match(/\[([\d.]+\s*(?:GB|MB)(?:\/E)?)]/i);
-    const baseFileSize = baseSizeMatch ? baseSizeMatch[1] : 'N/A';
-
-    const baseSeasonMatch = headerText.match(/\b(?:Season|S)\s*0*(\d+)\b/i) ||
-                            mainTitle.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
-    const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(headerText) || /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle);
-
     const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-g-drive|maxbutton-af-download|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     const links = [...sectionHtml.matchAll(buttonRegex)];
 
@@ -158,37 +189,23 @@ export function parseMoviesModArticle(
         targetUrl = base64Decode(b64);
       }
 
-      const linkSeasonMatch = linkText.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
-      const seasonMatch = linkSeasonMatch || baseSeasonMatch;
-      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
-
-      const isBatch = /\b(?:batch|zip)\b/i.test(linkText);
-      const isEpisode = /\b(?:episode|ep\s*\d+|e\d{2}|single)\b/i.test(linkText);
-
-      let contentType: 'MOVIE' | 'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP' = 'MOVIE';
-      if (isBatch) {
-        contentType = 'SEASON_BATCH_ZIP';
-      } else if (isSeriesArticle || isEpisode) {
-        contentType = 'SINGLE_EPISODE';
-      }
-
-      const linkSizeMatch = linkText.match(/\[([\d.]+\s*(?:GB|MB))]/i);
-      const optionFileSize = linkSizeMatch ? linkSizeMatch[1] : baseFileSize;
+      // Pure Model Classification
+      const meta = aiClassifyLink(`${mainTitle} ${headerText}`, linkText, targetUrl);
 
       options.push({
         id: `mod-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
         siteKey: 'moviesmod',
         siteDisplayName,
-        qualityLabel,
-        ripFormat,
-        codec,
-        fileSize: optionFileSize,
-        audioTracks,
-        contentType,
-        episodeName: isEpisode ? linkText : undefined,
-        seasonNumber,
+        qualityLabel: meta.qualityLabel,
+        ripFormat: meta.ripFormat,
+        codec: meta.codec,
+        fileSize: meta.fileSize,
+        audioTracks: meta.audioTracks,
+        contentType: meta.contentType,
+        episodeName: meta.episodeNumber ? `Episode ${meta.episodeNumber}` : undefined,
+        seasonNumber: meta.seasonNumber,
         targetUrl,
-        priorityScore: 1,
+        priorityScore: 2,
       });
     });
   });
@@ -245,48 +262,23 @@ export async function getMoviesModQualityOptions(
     return [];
   }
 
-  if (onLog) onLog(`${siteDisplayName}: ${articles.length} raw search hits found. Pre-filtering...`);
+  if (onLog) onLog(`${siteDisplayName}: ${articles.length} raw search hits found. Model classifying...`);
 
-  const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
   const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
 
-  // Pre-filter candidate hits by title match & media type
+  // Pre-filter candidate hits by AI title classification & media type
   let candidateHits = articles.filter((art) => {
-    const score = calculateMatchConfidence(queryTitle, art.title, targetYear);
-    if (score < 50) return false;
+    const postMeta = aiClassifyPost(art.title);
+    const score = calculateMatchConfidence(queryTitle, postMeta.cleanTitle || art.title, targetYear);
+    if (score < 40) return false;
 
-    const isTvPost = /season|s0\d|s\d|series|episodes|complete/i.test(art.title);
-    if (isTvTarget && !isTvPost) return false;
-    if (!isTvTarget && isTvPost) return false;
+    if (isTvTarget && postMeta.mediaType !== 'TV_SERIES') return false;
+    if (!isTvTarget && postMeta.mediaType === 'TV_SERIES') return false;
 
     return true;
   });
 
-  // Exact Year Priority Rule
-  if (numTargetYear && candidateHits.length > 0) {
-    const exactYearHits = candidateHits.filter((art) => {
-      const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
-      return postYearMatch ? parseInt(postYearMatch[1], 10) === numTargetYear : false;
-    });
-
-    if (exactYearHits.length > 0) {
-      if (onLog) onLog(`${siteDisplayName}: Exact year match (${numTargetYear}) found! Using exact hits.`);
-      candidateHits = exactYearHits;
-    } else {
-      candidateHits = candidateHits.filter((art) => {
-        const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
-        if (postYearMatch) {
-          return Math.abs(parseInt(postYearMatch[1], 10) - numTargetYear) <= 1;
-        }
-        return true;
-      });
-    }
-  }
-
-  if (candidateHits.length === 0) {
-    if (onLog) onLog(`${siteDisplayName}: 0 candidates passed year & media-type filter`);
-    return [];
-  }
+  if (candidateHits.length === 0) candidateHits = articles;
 
   const topHits = candidateHits.slice(0, 3);
   if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified candidate pages...`);
@@ -296,7 +288,6 @@ export async function getMoviesModQualityOptions(
       const res = await fetch(art.url, { signal, headers: { 'User-Agent': UA } });
       const html = await res.text();
 
-      // 3-Tier Golden IMDb Verification
       if (targetImdbId) {
         const cleanImdb = targetImdbId.trim().toLowerCase();
         const foundImdbMatches = [...html.matchAll(/tt\d{7,8}/gi)].map((m) => m[0].toLowerCase());
@@ -344,48 +335,51 @@ export async function fetchMoviesModEpisodes(
   signal?: AbortSignal
 ): Promise<SeriesEpisodeItem[]> {
   try {
-    const res = await fetch(lockerUrl, {
+    let activeUrl = lockerUrl;
+    if (activeUrl.includes('unblocked') || activeUrl.includes('?go=')) {
+      activeUrl = await bypassUnblocked(activeUrl, signal);
+    }
+
+    const res = await fetch(activeUrl, {
       signal,
       headers: {
         'User-Agent': UA,
+        'Referer': DEFAULT_MOVIESMOD_DOMAIN + '/',
       },
     });
     const html = await res.text();
 
+    const extracted = aiExtractEpisodesFromPortal(html);
+    if (extracted.length > 0) {
+      return extracted;
+    }
+
+    const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     const episodes: SeriesEpisodeItem[] = [];
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    let match;
 
-    links.forEach((l) => {
-      const href = l[1];
-      const text = l[2].replace(/<[^>]+>/g, '').trim();
+    while ((match = buttonRegex.exec(html)) !== null) {
+      const href = match[1];
+      const text = match[2].replace(/<[^>]+>/g, '').trim();
 
-      if (
-        href.includes('unblocked') ||
-        href.includes('gdrive') ||
-        href.includes('driveseed') ||
-        href.includes('driveleech') ||
-        href.includes('fastdl')
-      ) {
-        const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
-        const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
+      const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i);
+      const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
 
-        episodes.push({
-          episodeNumber: epNum,
-          episodeTitle: text || `Episode ${epNum}`,
-          targetUrl: href,
-        });
-      }
-    });
+      episodes.push({
+        episodeNumber: epNum,
+        episodeTitle: `Episode ${epNum}`,
+        targetUrl: href,
+      });
+    }
 
-    episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
-    return episodes;
-  } catch (e: any) {
+    return episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+  } catch (err) {
     return [];
   }
 }
 
 /**
- * Resolves Pass 2 MoviesMod deep locker URL to direct stream download link.
+ * Resolves Pass 2 MoviesMod final download / streaming locker.
  */
 export async function resolveMoviesModLocker(
   targetUrl: string,
@@ -394,51 +388,14 @@ export async function resolveMoviesModLocker(
 ): Promise<ResolvedStreamResult> {
   try {
     let currentUrl = targetUrl;
-
-    // 1. If targetUrl is an unblocked cloud link directly, run bypass
-    if (currentUrl.includes('unblocked')) {
-      const bypassed = await bypassUnblocked(currentUrl, signal);
-      if (bypassed && bypassed.startsWith('http')) {
-        return {
-          success: true,
-          streamUrl: bypassed,
-          providerName: 'MOVIESMOD [DRIVESEED]',
-          qualityLabel,
-        };
-      }
-    }
-
-    // 2. Fetch locker page if targetUrl is intermediate modpro/locker page
-    const res = await fetch(currentUrl, {
-      signal,
-      headers: { 'User-Agent': UA },
-    });
-    const html = await res.text();
-
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    const candidateLink = links.find((l) => {
-      const href = l[1];
-      return href.includes('unblocked') || href.includes('driveseed') || href.includes('driveleech') || href.includes('gdrive') || href.includes('fastdl');
-    });
-
-    if (candidateLink) {
-      let candidateUrl = candidateLink[1];
-      if (candidateUrl.includes('unblocked')) {
-        candidateUrl = await bypassUnblocked(candidateUrl, signal);
-      }
-
-      return {
-        success: true,
-        streamUrl: candidateUrl,
-        providerName: 'MOVIESMOD [STREAM]',
-        qualityLabel,
-      };
+    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=')) {
+      currentUrl = await bypassUnblocked(currentUrl, signal);
     }
 
     return {
       success: true,
-      streamUrl: targetUrl,
-      providerName: 'MOVIESMOD DIRECT',
+      streamUrl: currentUrl,
+      providerName: 'MOVIESMOD',
       qualityLabel,
     };
   } catch (err: any) {
