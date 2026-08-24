@@ -265,7 +265,7 @@ export async function getVegaMoviesQualityOptions(
 
   const pagePromises = topHits.map(async (hit: any) => {
     let permalink = hit.document?.permalink || '';
-    if (permalink.startsWith('/')) permalink = BASE_DOMAIN + permalink;
+    if (permalink.startsWith('/')) permalink = baseDomain + permalink;
 
     try {
       const res = await fetch(permalink, { signal, headers: { 'User-Agent': UA } });

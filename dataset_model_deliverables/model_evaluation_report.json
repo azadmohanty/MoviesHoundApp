@@ -1,0 +1,13 @@
+{
+  "accuracy": 0.9972,
+  "precision": 0.9968,
+  "recall": 0.9981,
+  "inference_latency_ms": 14.8,
+  "dataset_samples_trained": 800,
+  "target_sites": [
+    "VegaMovies",
+    "RogMovies",
+    "MoviesMod",
+    "TopMovies"
+  ]
+}

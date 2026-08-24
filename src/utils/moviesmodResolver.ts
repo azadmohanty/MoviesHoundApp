@@ -2,7 +2,7 @@ import { ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
 import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
 
-const DEFAULT_MOVIESMOD_DOMAIN = 'https://moviesmod.at';
+const DEFAULT_MOVIESMOD_DOMAIN = 'https://moviesmod.zone';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 export interface SeriesEpisodeItem {

@@ -55,8 +55,8 @@ export const extractDomainFromHtml = (html: string): string | null => {
  * before GitHub domains.json has ever been fetched.
  */
 export const HARDCODED_FALLBACKS: Record<string, string> = {
-  vegamovies: 'https://vegamovies.navy',
-  moviesmod: 'https://moviesmod.at',
+  vegamovies: 'https://vegamovies.catering',
+  moviesmod: 'https://moviesmod.zone',
   rogmovies: 'https://rogmovies.rest',
   topmovies: 'https://moviesleech.asia',
   gokuhd: 'https://gokuhd.com',

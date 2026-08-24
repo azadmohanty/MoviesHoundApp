@@ -1,0 +1,27 @@
+{
+  "media_types": [
+    "MOVIE",
+    "TV_SERIES"
+  ],
+  "resolutions": [
+    "480p",
+    "720p",
+    "1080p",
+    "2160p"
+  ],
+  "codecs": [
+    "x264",
+    "x265",
+    "hevc",
+    "10bit",
+    "av1"
+  ],
+  "locker_extractors": [
+    "NexDrive",
+    "VCloud",
+    "DriveSeed",
+    "HubCloud",
+    "Pixeldrain",
+    "FSLv2"
+  ]
+}
