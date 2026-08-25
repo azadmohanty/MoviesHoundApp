@@ -24,6 +24,7 @@ export interface ScrapedQualityOption {
   seasonNumber: number;    // e.g. 1, 2, 3
   targetUrl: string;       // Pass 2 locker URL
   priorityScore: number;   // 1 for VegaMovies, 2 for MoviesMod, 3 for Bollyflix
+  imdbId?: string;
 }
 
 export interface ResolvedStreamResult {

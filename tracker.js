@@ -86,12 +86,30 @@ async function resolveVidSrc() {
 
 async function resolveDomain(key, url) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
     const html = await response.text();
     let finalUrl = extractDomainFromHtml(html);
 
     if (finalUrl) {
       if (finalUrl.endsWith('/')) finalUrl = finalUrl.slice(0, -1);
+
+      // Hop 2 check: If resolved URL is an intermediate gateway hub, follow the "View Full Site" / live link
+      if (key === 'vegamovies' || finalUrl.includes('1vegamovies')) {
+        try {
+          const hubRes = await fetch(finalUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+          const hubHtml = await hubRes.text();
+          const engineMatch = hubHtml.match(/href="([^"]*vegamovies\.[a-z0-9]+[^"]*)"/i) ||
+                             hubHtml.match(/href="([^"]+)"[^>]*>View Full Site/i);
+          if (engineMatch) {
+            let activeUrl = engineMatch[1].replace(/\/$/, '');
+            if (activeUrl.startsWith('http')) {
+              console.log(`Resolved ${key} (Hop 2 Gateway) -> ${activeUrl}`);
+              return activeUrl;
+            }
+          }
+        } catch (_) {}
+      }
+
       console.log(`Resolved ${key} -> ${finalUrl}`);
       return finalUrl;
     } else {

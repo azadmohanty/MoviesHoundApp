@@ -1,9 +1,27 @@
 import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
-import { aiClassifyPost, aiClassifyLink, aiExtractEpisodesFromPortal } from '../services/aiParserService';
+import { getLiveDomain } from './resolver';
 
-const DEFAULT_MOVIESMOD_DOMAIN = 'https://moviesmod.zone';
+export const getMoviesModBaseDomain = (): string => getLiveDomain('moviesmod');
+const DEFAULT_MOVIESMOD_DOMAIN = getLiveDomain('moviesmod');
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+function cleanText(raw?: string): string {
+  if (!raw) return '';
+  return raw.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeQuality(q?: string): '480p' | '720p' | '1080p' | '2K' | '4K' {
+  if (!q) return '720p';
+  const clean = q.trim().toLowerCase();
+  if (clean.includes('4k') || clean.includes('2160')) return '4K';
+  if (clean.includes('2k') || clean.includes('1440')) return '2K';
+  if (clean.includes('1080')) return '1080p';
+  if (clean.includes('720')) return '720p';
+  if (clean.includes('480')) return '480p';
+  return '720p';
+}
 
 export interface SeriesEpisodeItem {
   episodeNumber: number;
@@ -11,144 +29,77 @@ export interface SeriesEpisodeItem {
   targetUrl: string;
 }
 
-/**
- * Base64 helper for decoding url= parameters on MoviesMod buttons
- */
-function base64Decode(str: string): string {
-  try {
-    if (typeof atob === 'function') {
-      return atob(str);
-    }
-    return Buffer.from(str, 'base64').toString('utf-8');
-  } catch (e) {
-    return str;
-  }
+export function extractImdbId(html: string): string | null {
+  if (!html) return null;
+  const linkMatch = html.match(/imdb\.com\/title\/(tt\d{7,8})/i);
+  if (linkMatch) return linkMatch[1].toLowerCase();
+  const textMatch = html.match(/IMDb(?:\s*Rating)?\s*:?[^<]*\b(tt\d{7,8})\b/i) || html.match(/\[imdb[^\]]*\]\s*(tt\d{7,8})/i);
+  if (textMatch) return textMatch[1].toLowerCase();
+  const rawMatch = html.match(/\b(tt\d{7,8})\b/i);
+  if (rawMatch) return rawMatch[1].toLowerCase();
+  return null;
 }
 
 /**
- * Helper to parse form landing data for 2-step unblocked bypass
- */
-function getFormActionAndData(html: string): { action: string | null; inputs: Record<string, string> } {
-  const actionMatch = html.match(/<form[^>]*id="landing"[^>]*action="([^"]+)"/i) || html.match(/<form[^>]*action="([^"]+)"/i);
-  const action = actionMatch ? actionMatch[1] : null;
-
-  const inputs: Record<string, string> = {};
-  const inputRegex = /<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"/gi;
-  let match;
-  while ((match = inputRegex.exec(html)) !== null) {
-    inputs[match[1]] = match[2];
-  }
-  return { action, inputs };
-}
-
-/**
- * Pass 2 Unblocked Bypass Engine (2-step POST + skToken cookie handshake)
- */
-export async function bypassUnblocked(url: string, signal?: AbortSignal): Promise<string> {
-  try {
-    const host = new URL(url).origin;
-    const step1Res = await fetch(url, { signal, headers: { 'User-Agent': UA } });
-    const step1Text = await step1Res.text();
-    const form1 = getFormActionAndData(step1Text);
-    if (!form1.action) return url;
-
-    const body1 = new URLSearchParams(form1.inputs).toString();
-    const step2Res = await fetch(form1.action, {
-      method: 'POST',
-      signal,
-      headers: {
-        'User-Agent': UA,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': url,
-      },
-      body: body1,
-    });
-    const step2Text = await step2Res.text();
-    const form2 = getFormActionAndData(step2Text);
-    if (!form2.action) return url;
-
-    const body2 = new URLSearchParams(form2.inputs).toString();
-    const step3Res = await fetch(form2.action, {
-      method: 'POST',
-      signal,
-      headers: {
-        'User-Agent': UA,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': form1.action,
-      },
-      body: body2,
-    });
-    const step3Text = await step3Res.text();
-
-    const skMatch = step3Text.match(/\?go=([^\s"'`]+)/i);
-    if (!skMatch) return url;
-
-    const skToken = skMatch[1];
-    const wpHttp2 = form2.inputs['_wp_http2'] || '';
-
-    const goUrl = `${host}?go=${skToken}`;
-    const step4Res = await fetch(goUrl, {
-      signal,
-      headers: {
-        'User-Agent': UA,
-        'Cookie': `${skToken}=${wpHttp2}`,
-        'Referer': form2.action,
-      },
-    });
-    const step4Text = await step4Res.text();
-
-    const metaRefresh = step4Text.match(/meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"/i) ||
-                        step4Text.match(/window\.location\.replace\(["']([^"']+)["']\)/i);
-    
-    return metaRefresh ? metaRefresh[1] : url;
-  } catch (err) {
-    return url;
-  }
-}
-
-/**
- * Raw Search Cards Provider for the Raw Discovered Posts Explorer
+ * Raw Search Cards Provider for Layer 1 Discovered Posts Feed
  */
 export async function searchMoviesModRawCards(
   queryTitle: string,
   baseDomain: string = DEFAULT_MOVIESMOD_DOMAIN,
   signal?: AbortSignal
 ): Promise<SearchArticleCard[]> {
-  const searchQuery = sanitizeSearchQuery(queryTitle);
-  const searchUrl = `${baseDomain}/search/${encodeURIComponent(searchQuery)}/page/1`;
+  const cleanQ = sanitizeSearchQuery(queryTitle);
+  const searchUrl = `${baseDomain}/?s=${encodeURIComponent(cleanQ)}`;
 
   try {
-    const res = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA } });
+    const res = await fetch(searchUrl, {
+      signal,
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    if (!res.ok) return [];
+
     const html = await res.text();
-
-    const articleRegex = /<article[\s\S]*?>([\s\S]*?)<\/article>/gi;
     const cards: SearchArticleCard[] = [];
-    let match;
-    let idx = 0;
 
-    while ((match = articleRegex.exec(html)) !== null) {
-      const content = match[1];
-      const titleMatch = /title="([^"]+)"/i.exec(content);
-      const hrefMatch = /href="([^"]+)"/i.exec(content);
-      const imgMatch = /(?:data-src|src)="([^"]+)"/i.exec(content);
+    const articleMatches = [...html.matchAll(/<article[^>]*>([\s\S]*?)<\/article>/gi)];
+    articleMatches.forEach((am, i) => {
+      const artHtml = am[1];
+      const linkMatch = artHtml.match(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+      const titleMatch = artHtml.match(/<h[23][^>]*class="[^"]*entry-title[^"]*"[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i) ||
+                         artHtml.match(/title="([^"]+)"/i);
+      const imgMatch = artHtml.match(/<img[^>]+src="([^"]+)"/i);
 
-      if (titleMatch && hrefMatch) {
-        const postTitle = titleMatch[1].replace(/^Download\s+/i, '').trim();
-        const postMeta = aiClassifyPost(postTitle);
+      if (linkMatch) {
+        const href = linkMatch[1];
+        const titleText = cleanText(
+          (titleMatch && titleMatch[2]) ||
+          (titleMatch && titleMatch[1]) ||
+          linkMatch[2]
+        );
 
-        cards.push({
-          id: `mod-card-${idx++}-${Date.now()}`,
-          title: postTitle,
-          permalink: hrefMatch[1],
-          posterUrl: imgMatch ? imgMatch[1] : undefined,
-          siteKey: 'moviesmod',
-          siteDisplayName: 'MOVIESMOD',
-          confidenceScore: parseFloat(postMeta.confidence) * 100,
-          seasonTags: postMeta.seasons,
-          audioTracks: postMeta.audioTracks.join(', '),
-        });
+        if (href && href.startsWith('http') && !href.includes('/category/') && !href.includes('/tag/') && !href.includes('/page/')) {
+          const sMatch = titleText.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i);
+          const seasonTags = sMatch ? [parseInt(sMatch[1], 10)] : undefined;
+          const audioMatch = titleText.match(/\{([^}]+)\}/i) || titleText.match(/\(([^)]+Audio[^)]*)\)/i);
+          const audioTracks = audioMatch ? audioMatch[1].trim() : undefined;
+
+          cards.push({
+            id: `mmod-card-${i}-${Date.now()}`,
+            title: titleText,
+            permalink: href,
+            posterUrl: imgMatch ? imgMatch[1] : undefined,
+            siteKey: 'moviesmod',
+            siteDisplayName: 'MOVIESMOD',
+            confidenceScore: calculateMatchConfidence(queryTitle, titleText),
+            seasonTags,
+            audioTracks,
+          });
+        }
       }
-    }
+    });
 
     return cards;
   } catch (e) {
@@ -157,64 +108,97 @@ export async function searchMoviesModRawCards(
 }
 
 /**
- * Model-Driven DOM Parser for MoviesMod main article page.
+ * 100% Robust MoviesMod Article Parser
  */
-export function parseMoviesModArticle(
-  html: string,
-  articleUrl: string,
-  siteDisplayName: string = 'MOVIESMOD'
-): ScrapedQualityOption[] {
+export function parseMoviesModArticle(html: string, articleUrl: string = '', siteDisplayName: string = 'MOVIESMOD'): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
+  const imdbId = extractImdbId(html);
 
-  const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
+  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const mainTitle = cleanText(h1Match ? h1Match[1] : '');
 
-  const headerRegex = /<h[2-5][^>]*>([\s\S]*?)<\/h[2-5]>([\s\S]*?)(?=<h[1-5]|$)/gi;
-  const matches = [...html.matchAll(headerRegex)];
+  // Strict Series vs Movie flag
+  const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle) ||
+                          /\b(?:season|s0\d|series|episodes|complete)\b/i.test(articleUrl);
 
-  matches.forEach((match) => {
-    const headerText = match[1].replace(/<[^>]+>/g, '').trim();
-    const sectionHtml = match[2];
+  // Restrict to thecontent / entry-content to exclude related posts and comments
+  const bodyMatch = html.match(/<div[^>]*class="[^"]*(?:thecontent|entry-content)[^"]*"[^>]*>([\s\S]*?)(?:<div class="related-posts"|<center|<div id="comments"|$)/i);
+  const contentHtml = bodyMatch ? bodyMatch[1] : html;
 
-    const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-g-drive|maxbutton-af-download|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-    const links = [...sectionHtml.matchAll(buttonRegex)];
+  const sectionRegex = /<h([2345])[^>]*>([\s\S]*?)<\/h\1>([\s\S]*?)(?=<h[2345]|<hr|$)/gi;
+  const sections = [...contentHtml.matchAll(sectionRegex)];
+
+  sections.forEach((sec) => {
+    const headerText = cleanText(sec[2]);
+    const bodyHtml = sec[3];
+
+    const links = [...bodyHtml.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    if (links.length === 0) return;
+
+    let headerQuality = (headerText.match(/\b(2160p|4k|1080p|720p|480p|2k)\b/i) || [])[1];
+    if (!headerQuality) {
+      const splitMatch = headerText.match(/\b(2160|1080|720|480)\s*p\b/i);
+      if (splitMatch) headerQuality = splitMatch[1] + 'p';
+    }
+
+    let seasonNumber = 1;
+    const sMatch = headerText.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i) || mainTitle.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i);
+    if (sMatch) seasonNumber = parseInt(sMatch[1], 10);
+
+    const codec = (headerText.match(/\b(10Bit|HEVC|x265|x264|AV1)\b/i) || [])[1] || 'x264';
+    const ripFormat = (headerText.match(/\b(BluRay|WEB-DL|HDRip|WEBRip|HDTV)\b/i) || [])[1] || 'WEB-DL';
+    const fileSize = (headerText.match(/\[([0-9.]+\s*(?:MB|GB))\]/i) || [])[1] || 'Unknown';
+    const audioTracks = (headerText.match(/\{([^}]+)\}/i) || headerText.match(/\(([^)]+Audio[^)]*)\)/i) || [])[1] || 'Dual Audio';
 
     links.forEach((l) => {
-      let rawHref = l[1];
-      const linkText = l[2].replace(/<[^>]+>/g, '').trim();
+      let href = l[1];
+      const fullTag = l[0];
+      const btnText = cleanText(l[2]);
 
-      let targetUrl = rawHref;
-      if (rawHref.includes('url=')) {
-        const b64 = rawHref.split('url=')[1].split('&')[0];
-        targetUrl = base64Decode(b64);
+      if (!href.startsWith('http') || href.includes('imdb.com') || href.includes('telegram') || href.includes('category') || href.includes('size')) return;
+      if (!/modpro|vcloud|fastdl|hubcloud|drive\.google|nexdrive|links/i.test(href) && !/download|episode|batch|zip/i.test(btnText)) return;
+
+      const btnQuality = (btnText.match(/\b(2160p|4k|1080p|720p|480p|2k)\b/i) || [])[1];
+      const qualityLabel = normalizeQuality(headerQuality || btnQuality || '720p');
+
+      const isZip = /batch-zip|batch|zip/i.test(fullTag) || /batch|zip/i.test(btnText);
+      const isEpisodeHub = /episode-links|episode/i.test(fullTag) || /episode/i.test(btnText);
+      
+      let contentType: 'MOVIE' | 'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP' = 'MOVIE';
+      if (isSeriesArticle) {
+        contentType = isZip ? 'SEASON_BATCH_ZIP' : 'SINGLE_EPISODE';
       }
 
-      // Pure Model Classification
-      const meta = aiClassifyLink(`${mainTitle} ${headerText}`, linkText, targetUrl);
+      let priorityScore = 5;
+      if (isZip) priorityScore = 90;
+      else if (/episode-links/i.test(fullTag) || /episodes\./i.test(href)) priorityScore = 1;
+      else if (/download-links/i.test(fullTag)) priorityScore = 2;
 
       options.push({
-        id: `mod-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        id: `mmod-${Math.random().toString(36).substr(2, 7)}`,
         siteKey: 'moviesmod',
         siteDisplayName,
-        qualityLabel: meta.qualityLabel,
-        ripFormat: meta.ripFormat,
-        codec: meta.codec,
-        fileSize: meta.fileSize,
-        audioTracks: meta.audioTracks,
-        contentType: meta.contentType,
-        episodeName: meta.episodeNumber ? `Episode ${meta.episodeNumber}` : undefined,
-        seasonNumber: meta.seasonNumber,
-        targetUrl,
-        priorityScore: 2,
+        imdbId: imdbId || undefined,
+        qualityLabel,
+        ripFormat,
+        codec,
+        fileSize,
+        audioTracks,
+        contentType,
+        episodeName: btnText,
+        seasonNumber,
+        targetUrl: href,
+        priorityScore,
       });
     });
   });
 
+  options.sort((a, b) => (a.priorityScore || 5) - (b.priorityScore || 5));
   return options;
 }
 
 /**
- * Automated Multi-Page Search & Smart Verification Pipeline for MoviesMod.
+ * Automated Multi-Page Search & Smart Verification Pipeline
  */
 export async function getMoviesModQualityOptions(
   queryTitle: string,
@@ -227,108 +211,69 @@ export async function getMoviesModQualityOptions(
   onLog?: (msg: string) => void
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = sanitizeSearchQuery(queryTitle);
-  const searchUrl = `${baseDomain}/search/${encodeURIComponent(searchQuery)}/page/1`;
+  const searchUrl = `${baseDomain}/?s=${encodeURIComponent(searchQuery)}`;
+  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}"...`);
 
-  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
-
-  let articles: { title: string; url: string; poster?: string }[] = [];
+  let html: string;
   try {
-    const res = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA } });
-    const html = await res.text();
-
-    const articleRegex = /<article[\s\S]*?>([\s\S]*?)<\/article>/gi;
-    let match;
-    while ((match = articleRegex.exec(html)) !== null) {
-      const content = match[1];
-      const titleMatch = /title="([^"]+)"/i.exec(content);
-      const hrefMatch = /href="([^"]+)"/i.exec(content);
-      const imgMatch = /(?:data-src|src)="([^"]+)"/i.exec(content);
-
-      if (titleMatch && hrefMatch) {
-        articles.push({
-          title: titleMatch[1].replace(/^Download\s+/i, '').trim(),
-          url: hrefMatch[1],
-          poster: imgMatch ? imgMatch[1] : undefined,
-        });
-      }
-    }
-  } catch (e: any) {
-    if (onLog) onLog(`${siteDisplayName} search error: ${e.message}`);
-    return [];
-  }
-
-  if (articles.length === 0) {
-    if (onLog) onLog(`${siteDisplayName}: 0 search hits returned`);
-    return [];
-  }
-
-  if (onLog) onLog(`${siteDisplayName}: ${articles.length} raw search hits found. Model classifying...`);
-
-  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
-
-  // Pre-filter candidate hits by AI title classification & media type
-  let candidateHits = articles.filter((art) => {
-    const postMeta = aiClassifyPost(art.title);
-    const score = calculateMatchConfidence(queryTitle, postMeta.cleanTitle || art.title, targetYear);
-    if (score < 40) return false;
-
-    if (isTvTarget && postMeta.mediaType !== 'TV_SERIES') return false;
-    if (!isTvTarget && postMeta.mediaType === 'TV_SERIES') return false;
-
-    return true;
-  });
-
-  if (candidateHits.length === 0) candidateHits = articles;
-
-  const topHits = candidateHits.slice(0, 3);
-  if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified candidate pages...`);
-
-  const pagePromises = topHits.map(async (art) => {
-    try {
-      const res = await fetch(art.url, { signal, headers: { 'User-Agent': UA } });
-      const html = await res.text();
-
-      if (targetImdbId) {
-        const cleanImdb = targetImdbId.trim().toLowerCase();
-        const foundImdbMatches = [...html.matchAll(/tt\d{7,8}/gi)].map((m) => m[0].toLowerCase());
-
-        if (foundImdbMatches.length > 0) {
-          const hasExactImdb = foundImdbMatches.includes(cleanImdb);
-          if (!hasExactImdb) {
-            if (onLog) onLog(`${siteDisplayName}: Rejecting page (IMDb ID mismatch: ${foundImdbMatches[0]})`);
-            return [];
-          } else {
-            if (onLog) onLog(`${siteDisplayName}: 🌟 100% Golden IMDb Match confirmed (${cleanImdb})`);
-          }
-        }
-      }
-
-      return parseMoviesModArticle(html, art.url, siteDisplayName);
-    } catch (e: any) {
+    const res = await fetch(searchUrl, {
+      signal,
+      headers: {
+        'User-Agent': UA,
+        'Referer': baseDomain + '/',
+      },
+    });
+    if (!res.ok) {
+      if (onLog) onLog(`${siteDisplayName}: HTTP error ${res.status}`);
       return [];
     }
+    html = await res.text();
+  } catch (err: any) {
+    if (onLog) onLog(`${siteDisplayName}: Search failed or timed out: ${err.message}`);
+    return [];
+  }
+
+  const rawCards = await searchMoviesModRawCards(queryTitle, baseDomain, signal);
+  if (rawCards.length === 0) {
+    if (onLog) onLog(`${siteDisplayName}: 0 search hits found for "${searchQuery}".`);
+    return [];
+  }
+
+  const cleanTargetImdb = targetImdbId ? targetImdbId.trim().toLowerCase().match(/tt\d{7,8}/)?.[0] : undefined;
+
+  let candidates = rawCards.filter((card) => {
+    const score = calculateMatchConfidence(queryTitle, card.title, targetYear);
+    return score >= 35;
   });
 
-  const pageResults = await Promise.allSettled(pagePromises);
-  const allOptions: ScrapedQualityOption[] = [];
+  if (candidates.length === 0) candidates = rawCards;
 
-  pageResults.forEach((res) => {
-    if (res.status === 'fulfilled') {
-      allOptions.push(...res.value);
-    }
+  const topHits = candidates.slice(0, 3);
+  if (onLog) onLog(`${siteDisplayName}: Fetching ${topHits.length} verified candidate pages...`);
+
+  const results = await Promise.allSettled(
+    topHits.map(async (card) => {
+      const res = await fetch(card.permalink, { signal, headers: { 'User-Agent': UA } });
+      const articleHtml = await res.text();
+      return parseMoviesModArticle(articleHtml, card.permalink, siteDisplayName);
+    })
+  );
+
+  const allOptions: ScrapedQualityOption[] = [];
+  results.forEach((res) => {
+    if (res.status === 'fulfilled') allOptions.push(...res.value);
   });
 
   const optionMap = new Map<string, ScrapedQualityOption>();
   allOptions.forEach((o) => optionMap.set(o.targetUrl, o));
-
   const uniqueOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
-  if (onLog) onLog(`${siteDisplayName}: 🎉 ${uniqueOptions.length} quality options extracted across matching pages!`);
 
+  if (onLog) onLog(`${siteDisplayName}: Extracted ${uniqueOptions.length} quality options.`);
   return uniqueOptions;
 }
 
 /**
- * Fetches individual episode items for a Web Series from MoviesMod episode locker page.
+ * 2-Tier Episode Discovery Engine for MoviesMod Web Series (modpro.blog / episodes hub)
  */
 export async function fetchMoviesModEpisodes(
   lockerUrl: string,
@@ -349,28 +294,23 @@ export async function fetchMoviesModEpisodes(
     });
     const html = await res.text();
 
-    const extracted = aiExtractEpisodesFromPortal(html);
-    if (extracted.length > 0) {
-      return extracted;
-    }
-
-    const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const links = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
     const episodes: SeriesEpisodeItem[] = [];
-    let match;
 
-    while ((match = buttonRegex.exec(html)) !== null) {
-      const href = match[1];
-      const text = match[2].replace(/<[^>]+>/g, '').trim();
+    links.forEach((l) => {
+      const href = l[1];
+      const text = cleanText(l[2]);
 
-      const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i);
-      const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
-
-      episodes.push({
-        episodeNumber: epNum,
-        episodeTitle: `Episode ${epNum}`,
-        targetUrl: href,
-      });
-    }
+      const epMatch = text.match(/^(?:Episode|Ep|E)\s*0*(\d{1,3})/i) || href.match(/(?:episode|ep|e)0*(\d{1,3})/i);
+      if (epMatch && href.startsWith('http')) {
+        const epNum = parseInt(epMatch[1], 10);
+        episodes.push({
+          episodeNumber: epNum,
+          episodeTitle: `Episode ${epNum < 10 ? '0' + epNum : epNum}`,
+          targetUrl: href,
+        });
+      }
+    });
 
     return episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
   } catch (err) {
@@ -378,9 +318,6 @@ export async function fetchMoviesModEpisodes(
   }
 }
 
-/**
- * Resolves Pass 2 MoviesMod final download / streaming locker.
- */
 export async function resolveMoviesModLocker(
   targetUrl: string,
   qualityLabel: string = '720p',
@@ -388,7 +325,7 @@ export async function resolveMoviesModLocker(
 ): Promise<ResolvedStreamResult> {
   try {
     let currentUrl = targetUrl;
-    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=')) {
+    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=') || currentUrl.includes('modpro.blog')) {
       currentUrl = await bypassUnblocked(currentUrl, signal);
     }
 
@@ -403,7 +340,99 @@ export async function resolveMoviesModLocker(
       success: false,
       providerName: 'MOVIESMOD',
       qualityLabel,
-      message: `MoviesMod resolution error: ${err.message}`,
+      message: err.message || 'MoviesMod resolution failed',
     };
+  }
+}
+
+/**
+ * Exact port of CloudStream MoviesmodProvider.kt bypass algorithm.
+ * Unpacks cloud.unblockedgames.world / modpro landing forms directly into DriveSeed / DriveLeech / FastDL links!
+ */
+export async function bypassUnblocked(url: string, signal?: AbortSignal): Promise<string> {
+  try {
+    const host = new URL(url).origin;
+
+    // Step 1: Initial GET
+    const res1 = await fetch(url, {
+      signal,
+      headers: { 'User-Agent': UA, 'Referer': 'https://episodes.modpro.blog/' },
+    });
+    const html1 = await res1.text();
+
+    const formUrl1 = (html1.match(/<form[^>]+id="landing"[^>]+action="([^"]+)"/i) || [])[1] || `${host}/`;
+    const inputs1 = [...html1.matchAll(/<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]+)"/gi)];
+    const data1 = new URLSearchParams();
+    inputs1.forEach((i) => data1.append(i[1], i[2]));
+
+    // Step 2: First POST
+    const res2 = await fetch(formUrl1, {
+      method: 'POST',
+      body: data1.toString(),
+      signal,
+      headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': url },
+    });
+    const html2 = await res2.text();
+
+    const formUrl2 = (html2.match(/<form[^>]+id="landing"[^>]+action="([^"]+)"/i) || [])[1] || `${host}/`;
+    const inputs2 = [...html2.matchAll(/<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]+)"/gi)];
+    const data2 = new URLSearchParams();
+    inputs2.forEach((i) => data2.append(i[1], i[2]));
+
+    // Step 3: Second POST
+    const res3 = await fetch(formUrl2, {
+      method: 'POST',
+      body: data2.toString(),
+      signal,
+      headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': formUrl1 },
+    });
+    const html3 = await res3.text();
+
+    // Step 4: Extract ?go= token
+    const tokenMatch = html3.match(/\?go=([a-zA-Z0-9_-]+)/i);
+    if (!tokenMatch) {
+      const directLocker = html3.match(/href="(https?:\/\/[^"]*(?:driveseed|driveleech|hubcloud|fastdl)[^"]*)"/i);
+      if (directLocker) return directLocker[1];
+      return url;
+    }
+
+    const skToken = tokenMatch[1];
+    const wpHttp2 = data2.get('_wp_http2') || data1.get('_wp_http2') || '';
+
+    // Step 5: GET $host?go=$skToken with Cookie
+    const res4 = await fetch(`${host}/?go=${skToken}`, {
+      signal,
+      headers: {
+        'User-Agent': UA,
+        'Referer': formUrl2,
+        'Cookie': `${skToken}=${wpHttp2}`,
+      },
+    });
+    const html4 = await res4.text();
+
+    const refreshMatch = html4.match(/<meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"/i);
+    const driveUrl = refreshMatch ? refreshMatch[1] : null;
+
+    if (!driveUrl) {
+      const hrefMatch = html4.match(/href="(https?:\/\/[^"]*(?:driveseed|driveleech|hubcloud|fastdl)[^"]*)"/i);
+      if (hrefMatch) return hrefMatch[1];
+      return url;
+    }
+
+    // Step 6: Follow drive landing page
+    const res5 = await fetch(driveUrl, { signal, headers: { 'User-Agent': UA } });
+    const text5 = await res5.text();
+
+    const replaceMatch = text5.match(/replace\(["']([^"']+)["']\)/i);
+    if (replaceMatch && replaceMatch[1] !== '/404') {
+      const finalPath = replaceMatch[1];
+      if (finalPath.startsWith('http')) return finalPath;
+      const driveOrigin = new URL(driveUrl).origin;
+      return `${driveOrigin}${finalPath.startsWith('/') ? '' : '/'}${finalPath}`;
+    }
+
+    return driveUrl;
+  } catch (e) {
+    return url;
   }
 }
