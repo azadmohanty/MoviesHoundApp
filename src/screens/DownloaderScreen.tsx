@@ -41,12 +41,16 @@ import {
 } from '../utils/moviesmodResolver';
 import {
   getRogMoviesQualityOptions,
+  searchRogMoviesRawCards,
+  parseRogMoviesArticle,
   resolveRogMoviesLocker,
   fetchRogMoviesEpisodes,
   resolveRogMoviesUnlockedPage,
 } from '../utils/rogmoviesResolver';
 import {
   getTopMoviesQualityOptions,
+  searchTopMoviesRawCards,
+  parseTopMoviesArticle,
   resolveTopMoviesLocker,
   fetchTopMoviesEpisodes,
 } from '../utils/topmoviesResolver';
@@ -232,6 +236,16 @@ export default function DownloaderScreen({
         if (!disabledList.includes('moviesmod')) {
           rawPromises.push(searchMoviesModRawCards(cleanQ, moviesModDomain, createController()));
         }
+      } else if (activeCat === 'bollywood') {
+        const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies || 'https://rogmovies.rest';
+        const topDomain = liveDomains.topmovies || HARDCODED_FALLBACKS.topmovies || 'https://moviesleech.asia';
+
+        if (!disabledList.includes('rogmovies')) {
+          rawPromises.push(searchRogMoviesRawCards(cleanQ, rogDomain, createController()));
+        }
+        if (!disabledList.includes('topmovies')) {
+          rawPromises.push(searchTopMoviesRawCards(cleanQ, topDomain, createController()));
+        }
       }
 
       const results = await Promise.allSettled(rawPromises);
@@ -304,6 +318,10 @@ export default function DownloaderScreen({
         parsed = parseVegaMoviesArticle(html, card.permalink);
       } else if (card.siteKey === 'moviesmod') {
         parsed = parseMoviesModArticle(html, card.permalink, 'MOVIESMOD');
+      } else if (card.siteKey === 'rogmovies') {
+        parsed = parseRogMoviesArticle(html, card.permalink, 'ROGMOVIES');
+      } else if (card.siteKey === 'topmovies') {
+        parsed = parseTopMoviesArticle(html, card.permalink, 'TOPMOVIES');
       }
 
       if (parsed.length > 0) {
@@ -374,8 +392,16 @@ export default function DownloaderScreen({
 
       epFetcher(activeSeriesOption.targetUrl)
         .then((epList) => {
-          setEpisodesList(epList);
-          addLog(`Extracted ${epList.length} episodes.`);
+          const uniqueEps: SeriesEpisodeItem[] = [];
+          const seen = new Set<number>();
+          epList.forEach((ep) => {
+            if (!seen.has(ep.episodeNumber)) {
+              seen.add(ep.episodeNumber);
+              uniqueEps.push(ep);
+            }
+          });
+          setEpisodesList(uniqueEps);
+          addLog(`Extracted ${uniqueEps.length} episodes.`);
         })
         .finally(() => setEpisodesLoading(false));
     }
@@ -563,6 +589,18 @@ export default function DownloaderScreen({
                           </Text>
                         </View>
                       )}
+                      <View style={{ flex: 1 }} />
+                      <TouchableOpacity
+                        style={styles.openWebPill}
+                        onPress={() => {
+                          triggerSelectionHaptic();
+                          Linking.openURL(card.permalink).catch(() => {});
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="open-outline" size={11} color="rgba(255,255,255,0.7)" />
+                        <Text style={styles.openWebText}>PAGE</Text>
+                      </TouchableOpacity>
                     </View>
                     <Text style={styles.cardTitle} numberOfLines={2}>{card.title}</Text>
                     <View style={styles.cardBottomAction}>
@@ -599,7 +637,20 @@ export default function DownloaderScreen({
 
             {/* Active Post Summary Banner */}
             <View style={[styles.activeBanner, { borderLeftColor: getProviderColor(activeArticle.siteKey) }]}>
-              <Text style={styles.activeBannerSite}>{activeArticle.siteDisplayName}</Text>
+              <View style={styles.activeBannerTopRow}>
+                <Text style={styles.activeBannerSite}>{activeArticle.siteDisplayName}</Text>
+                <TouchableOpacity
+                  style={styles.openWebPill}
+                  onPress={() => {
+                    triggerSelectionHaptic();
+                    Linking.openURL(activeArticle.permalink).catch(() => {});
+                  }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="open-outline" size={11} color="#00E5FF" />
+                  <Text style={[styles.openWebText, { color: '#00E5FF' }]}>OPEN PAGE</Text>
+                </TouchableOpacity>
+              </View>
               <Text style={styles.activeBannerTitle} numberOfLines={2}>{activeArticle.title}</Text>
             </View>
 
@@ -667,9 +718,31 @@ export default function DownloaderScreen({
                   </View>
                 ) : (
                   <View style={styles.epGrid}>
-                    {episodesList.map((ep) => (
+                    {activeSeriesOption?.targetUrl && (
                       <TouchableOpacity
-                        key={`ep-${ep.episodeNumber}`}
+                        key="ep-hub-action-btn"
+                        style={[styles.epButton, { backgroundColor: getProviderColor(activeArticle.siteKey), borderColor: getProviderColor(activeArticle.siteKey) }]}
+                        onPress={() => {
+                          if (activeSeriesOption) {
+                            handleDownload(activeSeriesOption, 'download', activeSeriesOption.targetUrl);
+                          }
+                        }}
+                        disabled={resolvingId === activeSeriesOption.id}
+                        activeOpacity={0.7}
+                      >
+                        {resolvingId === activeSeriesOption.id ? (
+                          <ActivityIndicator size="small" color="#0A0A0C" />
+                        ) : (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Ionicons name="flash" size={12} color="#0A0A0C" />
+                            <Text style={{ color: '#0A0A0C', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 }}>HUB</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    )}
+                    {episodesList.map((ep, idx) => (
+                      <TouchableOpacity
+                        key={`ep-${ep.episodeNumber}-${idx}`}
                         style={[styles.epButton, { borderColor: `${getProviderColor(activeArticle.siteKey)}40` }]}
                         onPress={() => {
                           if (activeSeriesOption) {
@@ -946,6 +1019,23 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '700',
   },
+  openWebPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  openWebText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
   cardTitle: {
     color: '#FFFFFF',
     fontSize: 12,
@@ -992,12 +1082,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
+  activeBannerTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   activeBannerSite: {
     color: 'rgba(255,255,255,0.4)',
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 1,
-    marginBottom: 2,
   },
   activeBannerTitle: {
     color: '#FFFFFF',

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from '../screens/HomeScreen';
@@ -13,6 +13,7 @@ import { triggerSelectionHaptic } from '../utils/HapticsHelper';
 
 export default function AppNavigator() {
   const [activeTab, setActiveTab] = useState<TabType>('home');
+  const [tabHistory, setTabHistory] = useState<TabType[]>(['home']);
   const [downloaderQuery, setDownloaderQuery] = useState<string>('');
   const [downloaderMediaType, setDownloaderMediaType] = useState<string>('movie');
   const [downloaderImdbId, setDownloaderImdbId] = useState<string>('');
@@ -20,6 +21,31 @@ export default function AppNavigator() {
   const [downloaderIsBollywood, setDownloaderIsBollywood] = useState<boolean>(false);
   const [downloaderTrigger, setDownloaderTrigger] = useState<number>(0);
   const insets = useSafeAreaInsets();
+
+  const switchTab = (tab: TabType) => {
+    if (tab === activeTab) return;
+    triggerSelectionHaptic();
+    setActiveTab(tab);
+    setTabHistory((prev) => [...prev.filter((t) => t !== tab), tab]);
+  };
+
+  useEffect(() => {
+    const onBackPress = () => {
+      if (tabHistory.length > 1) {
+        const newHistory = [...tabHistory];
+        newHistory.pop();
+        const prevTab = newHistory[newHistory.length - 1] || 'home';
+        setTabHistory(newHistory);
+        setActiveTab(prevTab);
+        triggerSelectionHaptic();
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [tabHistory]);
 
   const handleNavigateToDownloader = (
     query: string,
@@ -34,8 +60,7 @@ export default function AppNavigator() {
     setDownloaderYear(year);
     setDownloaderIsBollywood(isBollywood);
     setDownloaderTrigger((t) => t + 1);
-    setActiveTab('downloader');
-    triggerSelectionHaptic();
+    switchTab('downloader');
   };
 
   const bottomPadding = Math.max(insets.bottom, 10);
@@ -70,10 +95,7 @@ export default function AppNavigator() {
         {/* Tab 1: HOME */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setActiveTab('home');
-          }}
+          onPress={() => switchTab('home')}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -94,10 +116,7 @@ export default function AppNavigator() {
         {/* Tab 2: SWIPE */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setActiveTab('swipe');
-          }}
+          onPress={() => switchTab('swipe')}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -115,13 +134,10 @@ export default function AppNavigator() {
           </Text>
         </TouchableOpacity>
 
-        {/* Tab 3: DOWNLOADER */}
+        {/* Tab 3: DOWNLOAD */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setActiveTab('downloader');
-          }}
+          onPress={() => switchTab('downloader')}
           activeOpacity={0.7}
         >
           <Ionicons
@@ -132,7 +148,7 @@ export default function AppNavigator() {
           <Text
             style={[
               styles.tabLabel,
-              activeTab === 'downloader' && styles.tabLabelYellowActive,
+              activeTab === 'downloader' && { color: '#FFE500', fontWeight: '800' },
             ]}
           >
             DOWNLOAD
@@ -142,10 +158,7 @@ export default function AppNavigator() {
         {/* Tab 4: ME */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setActiveTab('me');
-          }}
+          onPress={() => switchTab('me')}
           activeOpacity={0.7}
         >
           <Ionicons

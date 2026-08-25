@@ -325,7 +325,27 @@ export async function resolveMoviesModLocker(
 ): Promise<ResolvedStreamResult> {
   try {
     let currentUrl = targetUrl;
-    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=') || currentUrl.includes('modpro.blog')) {
+
+    // If targetUrl is a modpro.blog intermediate hub (e.g. /archives/44577 or /archives/44572)
+    if (currentUrl.includes('modpro.blog')) {
+      try {
+        const res = await fetch(currentUrl, {
+          signal,
+          headers: { 'User-Agent': UA, 'Referer': DEFAULT_MOVIESMOD_DOMAIN + '/' },
+        });
+        if (res.ok) {
+          const html = await res.text();
+          const batchMatch = html.match(/<a[^>]+href="([^"]*cloud\.unblockedgames[^"]*)"[^>]*>[\s\S]*?Batch/i) ||
+                             html.match(/<a[^>]+href="([^"]*cloud\.unblockedgames[^"]*)"[^>]*>/i) ||
+                             html.match(/<a[^>]+href="([^"]*(?:fastdl|driveseed|driveleech|hubcloud)[^"]*)"[^>]*>/i);
+          if (batchMatch) {
+            currentUrl = batchMatch[1];
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=')) {
       currentUrl = await bypassUnblocked(currentUrl, signal);
     }
 

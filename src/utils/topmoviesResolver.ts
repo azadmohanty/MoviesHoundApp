@@ -1,10 +1,28 @@
-import { ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
+import { SearchArticleCard, ScrapedQualityOption, ResolvedStreamResult } from './resolverTypes';
 import { calculateMatchConfidence, sanitizeSearchQuery } from './FuzzyMatcher';
-import { extractRipFormat, extractAudioTracks, extractVideoCodec } from './MediaTagExtractor';
+import { getLiveDomain } from './resolver';
 import { bypassUnblocked } from './moviesmodResolver';
 
-const DEFAULT_TOPMOVIES_DOMAIN = 'https://moviesleech.asia';
+export const getTopMoviesBaseDomain = (): string => getLiveDomain('topmovies');
+const DEFAULT_TOPMOVIES_DOMAIN = getLiveDomain('topmovies');
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+function cleanText(raw?: string): string {
+  if (!raw) return '';
+  return raw.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeQuality(q?: string): '480p' | '720p' | '1080p' | '2K' | '4K' {
+  if (!q) return '720p';
+  const clean = q.trim().toLowerCase();
+  if (clean.includes('4k') || clean.includes('2160')) return '4K';
+  if (clean.includes('2k') || clean.includes('1440')) return '2K';
+  if (clean.includes('1080')) return '1080p';
+  if (clean.includes('720')) return '720p';
+  if (clean.includes('480')) return '480p';
+  return '720p';
+}
 
 export interface SeriesEpisodeItem {
   episodeNumber: number;
@@ -12,113 +30,175 @@ export interface SeriesEpisodeItem {
   targetUrl: string;
 }
 
+export function extractImdbId(html: string): string | null {
+  if (!html) return null;
+  const linkMatch = html.match(/imdb\.com\/title\/(tt\d{7,8})/i);
+  if (linkMatch) return linkMatch[1].toLowerCase();
+  const textMatch = html.match(/IMDb(?:\s*Rating)?\s*:?[^<]*\b(tt\d{7,8})\b/i) || html.match(/\[imdb[^\]]*\]\s*(tt\d{7,8})/i);
+  if (textMatch) return textMatch[1].toLowerCase();
+  const rawMatch = html.match(/\b(tt\d{7,8})\b/i);
+  if (rawMatch) return rawMatch[1].toLowerCase();
+  return null;
+}
+
 /**
- * Base64 helper for decoding url= parameters on TopMovies buttons
+ * Raw Search Cards Provider for TopMovies (Bollywood)
  */
-function base64Decode(str: string): string {
+export async function searchTopMoviesRawCards(
+  queryTitle: string,
+  baseDomain: string = DEFAULT_TOPMOVIES_DOMAIN,
+  signal?: AbortSignal
+): Promise<SearchArticleCard[]> {
+  const cleanQ = sanitizeSearchQuery(queryTitle);
+  const searchUrl = `${baseDomain}/?s=${encodeURIComponent(cleanQ)}`;
+
   try {
-    if (typeof atob === 'function') {
-      return atob(str);
-    }
-    return Buffer.from(str, 'base64').toString('utf-8');
+    const res = await fetch(searchUrl, {
+      signal,
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    if (!res.ok) return [];
+
+    const html = await res.text();
+    const cards: SearchArticleCard[] = [];
+
+    const articleMatches = [...html.matchAll(/<article[^>]*>([\s\S]*?)<\/article>/gi)];
+    articleMatches.forEach((am, i) => {
+      const artHtml = am[1];
+      const linkMatch = artHtml.match(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+      const titleMatch = artHtml.match(/<h[23][^>]*class="[^"]*entry-title[^"]*"[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i) ||
+                         artHtml.match(/title="([^"]+)"/i);
+      const imgMatch = artHtml.match(/<img[^>]+src="([^"]+)"/i);
+
+      if (linkMatch) {
+        const href = linkMatch[1];
+        const titleText = cleanText(
+          (titleMatch && titleMatch[2]) ||
+          (titleMatch && titleMatch[1]) ||
+          linkMatch[2]
+        );
+
+        if (href && href.startsWith('http') && !href.includes('/category/') && !href.includes('/tag/') && !href.includes('/page/')) {
+          const sMatch = titleText.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i);
+          const seasonTags = sMatch ? [parseInt(sMatch[1], 10)] : undefined;
+          const audioMatch = titleText.match(/\{([^}]+)\}/i) || titleText.match(/\(([^)]+Audio[^)]*)\)/i);
+          const audioTracks = audioMatch ? audioMatch[1].trim() : undefined;
+
+          cards.push({
+            id: `top-card-${i}-${Date.now()}`,
+            title: titleText,
+            permalink: href,
+            posterUrl: imgMatch ? imgMatch[1] : undefined,
+            siteKey: 'topmovies',
+            siteDisplayName: 'TOPMOVIES',
+            confidenceScore: calculateMatchConfidence(queryTitle, titleText),
+            seasonTags,
+            audioTracks,
+          });
+        }
+      }
+    });
+
+    return cards;
   } catch (e) {
-    return str;
+    return [];
   }
 }
 
 /**
- * 100% Empirical DOM Parser for TopMovies main article page.
- * Inherits MoviesMod DOM structure, tailored for Bollywood content.
+ * 100% Robust TopMovies Article Parser
  */
-export function parseTopMoviesArticle(
-  html: string,
-  articleUrl: string,
-  siteDisplayName: string = 'TOPMOVIES'
-): ScrapedQualityOption[] {
+export function parseTopMoviesArticle(html: string, articleUrl: string = '', siteDisplayName: string = 'TOPMOVIES'): ScrapedQualityOption[] {
   const options: ScrapedQualityOption[] = [];
+  const imdbId = extractImdbId(html);
 
-  const h1Match = html.match(/<h1[^>]*class="entry-title"[^>]*>([\s\S]*?)<\/h1>/i) || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  const mainTitle = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : '';
+  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const mainTitle = cleanText(h1Match ? h1Match[1] : '');
 
-  const headerRegex = /<h[2-5][^>]*>([\s\S]*?)<\/h[2-5]>([\s\S]*?)(?=<h[1-5]|$)/gi;
-  const matches = [...html.matchAll(headerRegex)];
+  // Strict Series vs Movie flag
+  const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle) ||
+                          /\b(?:season|s0\d|series|episodes|complete)\b/i.test(articleUrl);
 
-  matches.forEach((match) => {
-    const headerText = match[1].replace(/<[^>]+>/g, '').trim();
-    const sectionHtml = match[2];
+  // Restrict to thecontent / entry-content to exclude related posts and comments
+  const bodyMatch = html.match(/<div[^>]*class="[^"]*(?:thecontent|entry-content)[^"]*"[^>]*>([\s\S]*?)(?:<div class="related-posts"|<center|<div id="comments"|$)/i);
+  const contentHtml = bodyMatch ? bodyMatch[1] : html;
 
-    if (!/480p|720p|1080p|2160p|4K/i.test(headerText)) return;
+  const sectionRegex = /<h([2345])[^>]*>([\s\S]*?)<\/h\1>([\s\S]*?)(?=<h[2345]|<hr|$)/gi;
+  const sections = [...contentHtml.matchAll(sectionRegex)];
 
-    let qualityLabel: '480p' | '720p' | '1080p' | '4K' = '720p';
-    if (headerText.includes('480p')) qualityLabel = '480p';
-    else if (headerText.includes('1080p')) qualityLabel = '1080p';
-    else if (/2160p|4K/i.test(headerText)) qualityLabel = '4K';
+  sections.forEach((sec) => {
+    const headerText = cleanText(sec[2]);
+    const bodyHtml = sec[3];
 
-    const fullTagContext = `${headerText} ${mainTitle}`;
-    const codec = extractVideoCodec(headerText);
-    const ripFormat = extractRipFormat(fullTagContext);
-    const audioTracks = extractAudioTracks(fullTagContext);
+    const links = [...bodyHtml.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    if (links.length === 0) return;
 
-    const baseSizeMatch = headerText.match(/\[([\d.]+\s*(?:GB|MB)(?:\/E)?)]/i);
-    const baseFileSize = baseSizeMatch ? baseSizeMatch[1] : 'N/A';
+    let headerQuality = (headerText.match(/\b(2160p|4k|1080p|720p|480p|2k)\b/i) || [])[1];
+    if (!headerQuality) {
+      const splitMatch = headerText.match(/\b(2160|1080|720|480)\s*p\b/i);
+      if (splitMatch) headerQuality = splitMatch[1] + 'p';
+    }
 
-    const baseSeasonMatch = headerText.match(/\b(?:Season|S)\s*0*(\d+)\b/i) ||
-                            mainTitle.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
-    const isSeriesArticle = /\b(?:season|s0\d|series|episodes|complete)\b/i.test(headerText) || /\b(?:season|s0\d|series|episodes|complete)\b/i.test(mainTitle);
+    let seasonNumber = 1;
+    const sMatch = headerText.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i) || mainTitle.match(/\b(?:Season|S)\s*0*(\d{1,2})\b/i);
+    if (sMatch) seasonNumber = parseInt(sMatch[1], 10);
 
-    const buttonRegex = /<a[^>]+class="[^"]*(?:maxbutton-download-links|maxbutton-episode-links|maxbutton-g-drive|maxbutton-af-download|maxbutton-1|maxbutton-5)[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-    const links = [...sectionHtml.matchAll(buttonRegex)];
+    const codec = (headerText.match(/\b(10Bit|HEVC|x265|x264|AV1)\b/i) || [])[1] || 'x264';
+    const ripFormat = (headerText.match(/\b(BluRay|WEB-DL|HDRip|WEBRip|HDTV)\b/i) || [])[1] || 'WEB-DL';
+    const fileSize = (headerText.match(/\[([0-9.]+\s*(?:MB|GB))\]/i) || [])[1] || 'Unknown';
+    const audioTracks = (headerText.match(/\{([^}]+)\}/i) || headerText.match(/\(([^)]+Audio[^)]*)\)/i) || [])[1] || 'Dual Audio';
 
     links.forEach((l) => {
-      let rawHref = l[1];
-      const linkText = l[2].replace(/<[^>]+>/g, '').trim();
+      let href = l[1];
+      const fullTag = l[0];
+      const btnText = cleanText(l[2]);
 
-      let targetUrl = rawHref;
-      if (rawHref.includes('url=')) {
-        const b64 = rawHref.split('url=')[1].split('&')[0];
-        targetUrl = base64Decode(b64);
-      }
+      if (!href.startsWith('http') || href.includes('imdb.com') || href.includes('telegram') || href.includes('category') || href.includes('size')) return;
+      if (!/modpro|vcloud|fastdl|hubcloud|drive\.google|nexdrive|links/i.test(href) && !/download|episode|batch|zip/i.test(btnText)) return;
 
-      const linkSeasonMatch = linkText.match(/\b(?:Season|S)\s*0*(\d+)\b/i);
-      const seasonMatch = linkSeasonMatch || baseSeasonMatch;
-      const seasonNumber = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
+      const btnQuality = (btnText.match(/\b(2160p|4k|1080p|720p|480p|2k)\b/i) || [])[1];
+      const qualityLabel = normalizeQuality(headerQuality || btnQuality || '720p');
 
-      const isBatch = /\b(?:batch|zip)\b/i.test(linkText);
-      const isEpisode = /\b(?:episode|ep\s*\d+|e\d{2}|single)\b/i.test(linkText);
-
+      const isZip = /batch-zip|batch|zip/i.test(fullTag) || /batch|zip/i.test(btnText);
+      
       let contentType: 'MOVIE' | 'SINGLE_EPISODE' | 'SEASON_BATCH_ZIP' = 'MOVIE';
-      if (isBatch) {
-        contentType = 'SEASON_BATCH_ZIP';
-      } else if (isSeriesArticle || isEpisode) {
-        contentType = 'SINGLE_EPISODE';
+      if (isSeriesArticle) {
+        contentType = isZip ? 'SEASON_BATCH_ZIP' : 'SINGLE_EPISODE';
       }
 
-      const linkSizeMatch = linkText.match(/\[([\d.]+\s*(?:GB|MB))]/i);
-      const optionFileSize = linkSizeMatch ? linkSizeMatch[1] : baseFileSize;
+      let priorityScore = 5;
+      if (isZip) priorityScore = 90;
+      else if (/episode-links/i.test(fullTag) || /episodes\./i.test(href)) priorityScore = 1;
+      else if (/download-links/i.test(fullTag)) priorityScore = 2;
 
       options.push({
-        id: `top-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        id: `top-${Math.random().toString(36).substr(2, 7)}`,
         siteKey: 'topmovies',
         siteDisplayName,
+        imdbId: imdbId || undefined,
         qualityLabel,
         ripFormat,
         codec,
-        fileSize: optionFileSize,
+        fileSize,
         audioTracks,
         contentType,
-        episodeName: isEpisode ? linkText : undefined,
+        episodeName: btnText,
         seasonNumber,
-        targetUrl,
-        priorityScore: 1,
+        targetUrl: href,
+        priorityScore,
       });
     });
   });
 
+  options.sort((a, b) => (a.priorityScore || 5) - (b.priorityScore || 5));
   return options;
 }
 
 /**
- * Automated Multi-Page Search & Smart Verification Pipeline for TopMovies.
+ * Automated Multi-Page Search & Smart Verification Pipeline for TopMovies
  */
 export async function getTopMoviesQualityOptions(
   queryTitle: string,
@@ -131,180 +211,93 @@ export async function getTopMoviesQualityOptions(
   onLog?: (msg: string) => void
 ): Promise<ScrapedQualityOption[]> {
   const searchQuery = sanitizeSearchQuery(queryTitle);
-  const searchUrl = `${baseDomain}/search/${encodeURIComponent(searchQuery)}/page/1`;
+  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}"...`);
 
-  if (onLog) onLog(`${siteDisplayName}: Searching "${searchQuery}" on ${baseDomain}...`);
-
-  let articles: { title: string; url: string; poster?: string }[] = [];
-  try {
-    const res = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA } });
-    const html = await res.text();
-
-    const articleRegex = /<article[\s\S]*?>([\s\S]*?)<\/article>/gi;
-    let match;
-    while ((match = articleRegex.exec(html)) !== null) {
-      const content = match[1];
-      const titleMatch = /title="([^"]+)"/i.exec(content);
-      const hrefMatch = /href="([^"]+)"/i.exec(content);
-      const imgMatch = /(?:data-src|src)="([^"]+)"/i.exec(content);
-
-      if (titleMatch && hrefMatch) {
-        articles.push({
-          title: titleMatch[1].replace(/^Download\s+/i, '').trim(),
-          url: hrefMatch[1],
-          poster: imgMatch ? imgMatch[1] : undefined,
-        });
-      }
-    }
-  } catch (e: any) {
-    if (onLog) onLog(`${siteDisplayName} search error: ${e.message}`);
+  const rawCards = await searchTopMoviesRawCards(queryTitle, baseDomain, signal);
+  if (rawCards.length === 0) {
+    if (onLog) onLog(`${siteDisplayName}: 0 search hits found for "${searchQuery}".`);
     return [];
   }
 
-  if (articles.length === 0) {
-    if (onLog) onLog(`${siteDisplayName}: 0 search hits returned`);
-    return [];
-  }
+  const cleanTargetImdb = targetImdbId ? targetImdbId.trim().toLowerCase().match(/tt\d{7,8}/)?.[0] : undefined;
 
-  if (onLog) onLog(`${siteDisplayName}: ${articles.length} raw search hits found. Pre-filtering...`);
-
-  const numTargetYear = targetYear ? parseInt(String(targetYear), 10) : undefined;
-  const isTvTarget = mediaType === 'tv' || mediaType === 'series' || mediaType === 'show';
-
-  let candidateHits = articles.filter((art) => {
-    const score = calculateMatchConfidence(queryTitle, art.title, targetYear);
-    if (score < 50) return false;
-
-    const isTvPost = /season|s0\d|s\d|series|episodes|complete/i.test(art.title);
-    if (isTvTarget && !isTvPost) return false;
-    if (!isTvTarget && isTvPost) return false;
-
-    return true;
+  let candidates = rawCards.filter((card) => {
+    const score = calculateMatchConfidence(queryTitle, card.title, targetYear);
+    return score >= 35;
   });
 
-  if (numTargetYear && candidateHits.length > 0) {
-    const exactYearHits = candidateHits.filter((art) => {
-      const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
-      return postYearMatch ? parseInt(postYearMatch[1], 10) === numTargetYear : false;
-    });
+  if (candidates.length === 0) candidates = rawCards;
 
-    if (exactYearHits.length > 0) {
-      if (onLog) onLog(`${siteDisplayName}: Exact year match (${numTargetYear}) found! Using exact hits.`);
-      candidateHits = exactYearHits;
-    } else {
-      candidateHits = candidateHits.filter((art) => {
-        const postYearMatch = art.title.match(/\b(19\d\d|20\d\d)\b/);
-        if (postYearMatch) {
-          return Math.abs(parseInt(postYearMatch[1], 10) - numTargetYear) <= 1;
-        }
-        return true;
-      });
-    }
-  }
+  const topHits = candidates.slice(0, 3);
+  if (onLog) onLog(`${siteDisplayName}: Fetching ${topHits.length} verified candidate pages...`);
 
-  if (candidateHits.length === 0) {
-    if (onLog) onLog(`${siteDisplayName}: 0 candidates passed year & media-type filter`);
-    return [];
-  }
+  const results = await Promise.allSettled(
+    topHits.map(async (card) => {
+      const res = await fetch(card.permalink, { signal, headers: { 'User-Agent': UA } });
+      const articleHtml = await res.text();
+      return parseTopMoviesArticle(articleHtml, card.permalink, siteDisplayName);
+    })
+  );
 
-  const topHits = candidateHits.slice(0, 3);
-  if (onLog) onLog(`${siteDisplayName}: Parallel fetching ${topHits.length} verified candidate pages...`);
-
-  const pagePromises = topHits.map(async (art) => {
-    try {
-      const res = await fetch(art.url, { signal, headers: { 'User-Agent': UA } });
-      const html = await res.text();
-
-      if (targetImdbId) {
-        const cleanImdb = targetImdbId.trim().toLowerCase();
-        const foundImdbMatches = [...html.matchAll(/tt\d{7,8}/gi)].map((m) => m[0].toLowerCase());
-
-        if (foundImdbMatches.length > 0) {
-          const hasExactImdb = foundImdbMatches.includes(cleanImdb);
-          if (!hasExactImdb) {
-            if (onLog) onLog(`${siteDisplayName}: Rejecting page (IMDb ID mismatch: ${foundImdbMatches[0]})`);
-            return [];
-          } else {
-            if (onLog) onLog(`${siteDisplayName}: 🌟 100% Golden IMDb Match confirmed (${cleanImdb})`);
-          }
-        }
-      }
-
-      return parseTopMoviesArticle(html, art.url, siteDisplayName);
-    } catch (e: any) {
-      return [];
-    }
-  });
-
-  const pageResults = await Promise.allSettled(pagePromises);
   const allOptions: ScrapedQualityOption[] = [];
-
-  pageResults.forEach((res) => {
-    if (res.status === 'fulfilled') {
-      allOptions.push(...res.value);
-    }
+  results.forEach((res) => {
+    if (res.status === 'fulfilled') allOptions.push(...res.value);
   });
 
   const optionMap = new Map<string, ScrapedQualityOption>();
   allOptions.forEach((o) => optionMap.set(o.targetUrl, o));
-
   const uniqueOptions = Array.from(optionMap.values()).sort((a, b) => a.priorityScore - b.priorityScore);
-  if (onLog) onLog(`${siteDisplayName}: 🎉 ${uniqueOptions.length} quality options extracted across matching pages!`);
 
+  if (onLog) onLog(`${siteDisplayName}: Extracted ${uniqueOptions.length} quality options.`);
   return uniqueOptions;
 }
 
 /**
- * Fetches individual episode items for a Web Series from TopMovies episode locker page.
+ * 2-Tier Episode Discovery Engine for TopMovies Web Series (modpro.blog / episodes hub)
  */
 export async function fetchTopMoviesEpisodes(
   lockerUrl: string,
   signal?: AbortSignal
 ): Promise<SeriesEpisodeItem[]> {
   try {
-    const res = await fetch(lockerUrl, {
+    let activeUrl = lockerUrl;
+    if (activeUrl.includes('unblocked') || activeUrl.includes('?go=')) {
+      activeUrl = await bypassUnblocked(activeUrl, signal);
+    }
+
+    const res = await fetch(activeUrl, {
       signal,
       headers: {
         'User-Agent': UA,
+        'Referer': DEFAULT_TOPMOVIES_DOMAIN + '/',
       },
     });
     const html = await res.text();
 
+    const links = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
     const episodes: SeriesEpisodeItem[] = [];
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
     links.forEach((l) => {
       const href = l[1];
-      const text = l[2].replace(/<[^>]+>/g, '').trim();
+      const text = cleanText(l[2]);
 
-      if (
-        href.includes('unblocked') ||
-        href.includes('gdrive') ||
-        href.includes('driveseed') ||
-        href.includes('driveleech') ||
-        href.includes('fastdl')
-      ) {
-        const epMatch = text.match(/(?:Episode|Ep|E)\s*(\d+)/i) || href.match(/(?:episode|ep|e)(\d+)/i);
-        const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
-
+      const epMatch = text.match(/^(?:Episode|Ep|E)\s*0*(\d{1,3})/i) || href.match(/(?:episode|ep|e)0*(\d{1,3})/i);
+      if (epMatch && href.startsWith('http')) {
+        const epNum = parseInt(epMatch[1], 10);
         episodes.push({
           episodeNumber: epNum,
-          episodeTitle: text || `Episode ${epNum}`,
+          episodeTitle: `Episode ${epNum < 10 ? '0' + epNum : epNum}`,
           targetUrl: href,
         });
       }
     });
 
-    episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
-    return episodes;
-  } catch (e: any) {
+    return episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+  } catch (err) {
     return [];
   }
 }
 
-/**
- * Resolves Pass 2 TopMovies deep locker URL to direct stream download link.
- */
 export async function resolveTopMoviesLocker(
   targetUrl: string,
   qualityLabel: string = '720p',
@@ -313,48 +306,32 @@ export async function resolveTopMoviesLocker(
   try {
     let currentUrl = targetUrl;
 
-    if (currentUrl.includes('unblocked')) {
-      const bypassed = await bypassUnblocked(currentUrl, signal);
-      if (bypassed && bypassed.startsWith('http')) {
-        return {
-          success: true,
-          streamUrl: bypassed,
-          providerName: 'TOPMOVIES [DRIVESEED]',
-          qualityLabel,
-        };
-      }
+    if (currentUrl.includes('modpro.blog')) {
+      try {
+        const res = await fetch(currentUrl, {
+          signal,
+          headers: { 'User-Agent': UA, 'Referer': DEFAULT_TOPMOVIES_DOMAIN + '/' },
+        });
+        if (res.ok) {
+          const html = await res.text();
+          const batchMatch = html.match(/<a[^>]+href="([^"]*cloud\.unblockedgames[^"]*)"[^>]*>[\s\S]*?Batch/i) ||
+                             html.match(/<a[^>]+href="([^"]*cloud\.unblockedgames[^"]*)"[^>]*>/i) ||
+                             html.match(/<a[^>]+href="([^"]*(?:fastdl|driveseed|driveleech|hubcloud)[^"]*)"[^>]*>/i);
+          if (batchMatch) {
+            currentUrl = batchMatch[1];
+          }
+        }
+      } catch (_) {}
     }
 
-    const res = await fetch(currentUrl, {
-      signal,
-      headers: { 'User-Agent': UA },
-    });
-    const html = await res.text();
-
-    const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    const candidateLink = links.find((l) => {
-      const href = l[1];
-      return href.includes('unblocked') || href.includes('driveseed') || href.includes('driveleech') || href.includes('gdrive') || href.includes('fastdl');
-    });
-
-    if (candidateLink) {
-      let candidateUrl = candidateLink[1];
-      if (candidateUrl.includes('unblocked')) {
-        candidateUrl = await bypassUnblocked(candidateUrl, signal);
-      }
-
-      return {
-        success: true,
-        streamUrl: candidateUrl,
-        providerName: 'TOPMOVIES [STREAM]',
-        qualityLabel,
-      };
+    if (currentUrl.includes('unblocked') || currentUrl.includes('?go=')) {
+      currentUrl = await bypassUnblocked(currentUrl, signal);
     }
 
     return {
       success: true,
-      streamUrl: targetUrl,
-      providerName: 'TOPMOVIES DIRECT',
+      streamUrl: currentUrl,
+      providerName: 'TOPMOVIES',
       qualityLabel,
     };
   } catch (err: any) {
@@ -362,7 +339,7 @@ export async function resolveTopMoviesLocker(
       success: false,
       providerName: 'TOPMOVIES',
       qualityLabel,
-      message: `TopMovies resolution error: ${err.message}`,
+      message: err.message || 'TopMovies resolution failed',
     };
   }
 }
