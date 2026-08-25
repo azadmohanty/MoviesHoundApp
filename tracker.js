@@ -93,21 +93,34 @@ async function resolveDomain(key, url) {
     if (finalUrl) {
       if (finalUrl.endsWith('/')) finalUrl = finalUrl.slice(0, -1);
 
-      // Hop 2 check: If resolved URL is an intermediate gateway hub, follow the "View Full Site" / live link
-      if (key === 'vegamovies' || finalUrl.includes('1vegamovies')) {
+      // Hop 2 check: If resolved URL is an intermediate gateway hub (like 1vegamovies.cc or similar)
+      if (key === 'vegamovies' || key === 'rogmovies' || finalUrl.includes('1vegamovies') || finalUrl.includes('vglist')) {
         try {
           const hubRes = await fetch(finalUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
           const hubHtml = await hubRes.text();
-          const engineMatch = hubHtml.match(/href="([^"]*vegamovies\.[a-z0-9]+[^"]*)"/i) ||
-                             hubHtml.match(/href="([^"]+)"[^>]*>View Full Site/i);
-          if (engineMatch) {
-            let activeUrl = engineMatch[1].replace(/\/$/, '');
-            if (activeUrl.startsWith('http')) {
-              console.log(`Resolved ${key} (Hop 2 Gateway) -> ${activeUrl}`);
-              return activeUrl;
+
+          // Dynamically extract redirect endpoint from landing page script (e.g. href="/?re=vg&t=2" or ?re=...)
+          const scriptReMatch = hubHtml.match(/href=["'](\/\?[^"']*re=[^"']+)["']/i) ||
+                                hubHtml.match(/href=["']([^"']*re=[^"']+)["']/i);
+
+          const redirectPath = scriptReMatch ? scriptReMatch[1] : '/?re=vg&t=2';
+          const hop2Url = redirectPath.startsWith('http') ? redirectPath : `${finalUrl.replace(/\/$/, '')}${redirectPath.startsWith('/') ? '' : '/'}${redirectPath}`;
+
+          const hop2Res = await fetch(hop2Url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            redirect: 'follow',
+          });
+
+          if (hop2Res.ok && hop2Res.url) {
+            const liveOrigin = new URL(hop2Res.url).origin;
+            if (liveOrigin && !liveOrigin.includes('1vegamovies') && !liveOrigin.includes('vglist')) {
+              console.log(`Resolved ${key} (Hop 2 Dynamic Engine) -> ${liveOrigin}`);
+              return liveOrigin;
             }
           }
-        } catch (_) {}
+        } catch (e) {
+          console.warn(`Hop 2 dynamic follow error for ${key}:`, e.message);
+        }
       }
 
       console.log(`Resolved ${key} -> ${finalUrl}`);

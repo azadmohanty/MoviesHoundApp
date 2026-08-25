@@ -90,6 +90,16 @@ interface CachedSearchResult {
 
 const IN_MEMORY_CACHE = new Map<string, CachedSearchResult>();
 
+export type CategoryType = 'all' | 'hollywood' | 'indian' | 'anime' | 'asian';
+
+export const CATEGORIES: Array<{ key: CategoryType; label: string }> = [
+  { key: 'all', label: 'ALL' },
+  { key: 'hollywood', label: 'HOLLYWOOD' },
+  { key: 'indian', label: 'INDIAN' },
+  { key: 'anime', label: 'ANIME' },
+  { key: 'asian', label: 'ASIAN' },
+];
+
 export default function DownloaderScreen({
   initialSearchQuery = '',
   initialImdbId = '',
@@ -99,7 +109,7 @@ export default function DownloaderScreen({
   searchTrigger = 0,
 }: DownloaderScreenProps) {
   const [query, setQuery] = useState(initialSearchQuery);
-  const [category, setCategory] = useState<'hollywood' | 'bollywood'>(initialIsBollywood ? 'bollywood' : 'hollywood');
+  const [category, setCategory] = useState<CategoryType>(initialIsBollywood ? 'indian' : 'all');
   const [isSearching, setIsSearching] = useState(false);
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -149,9 +159,11 @@ export default function DownloaderScreen({
     if (searchTrigger > 0 && searchTrigger !== prevTriggerRef.current && initialSearchQuery) {
       prevTriggerRef.current = searchTrigger;
       setQuery(initialSearchQuery);
-      handleStartScrape(initialSearchQuery);
+      const targetCat: CategoryType = initialIsBollywood ? 'indian' : 'all';
+      setCategory(targetCat);
+      handleStartScrape(initialSearchQuery, targetCat);
     }
-  }, [searchTrigger]);
+  }, [searchTrigger, initialIsBollywood, initialSearchQuery]);
 
   useEffect(() => {
     getStorageString('@default_quality', '720p').then((q) => {
@@ -181,7 +193,7 @@ export default function DownloaderScreen({
   // ───────────────────────────────────────────────────────────────────────────
   // LAYER 1: DISCOVER CANDIDATE POSTS
   // ───────────────────────────────────────────────────────────────────────────
-  const handleStartScrape = async (overrideQuery?: string, overrideCategory?: 'hollywood' | 'bollywood') => {
+  const handleStartScrape = async (overrideQuery?: string, overrideCategory?: CategoryType) => {
     const activeQ = overrideQuery || query;
     const activeCat = overrideCategory || category;
     const cleanQ = sanitizeSearchQuery(activeQ);
@@ -226,25 +238,54 @@ export default function DownloaderScreen({
 
       const rawPromises: Promise<SearchArticleCard[]>[] = [];
 
-      if (activeCat === 'hollywood') {
-        const vegaDomain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
-        const moviesModDomain = liveDomains.moviesmod || 'https://moviesmod.zone';
+      const vegaDomain = liveDomains.vegamovies || HARDCODED_FALLBACKS.vegamovies;
+      const moviesModDomain = liveDomains.moviesmod || 'https://moviesmod.zone';
+      const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies || 'https://rogmovies.rest';
+      const topDomain = liveDomains.topmovies || HARDCODED_FALLBACKS.topmovies || 'https://moviesleech.asia';
 
+      if (activeCat === 'all') {
         if (!disabledList.includes('vegamovies')) {
           rawPromises.push(searchVegaMoviesRawCards(cleanQ, vegaDomain, createController()));
         }
         if (!disabledList.includes('moviesmod')) {
           rawPromises.push(searchMoviesModRawCards(cleanQ, moviesModDomain, createController()));
         }
-      } else if (activeCat === 'bollywood') {
-        const rogDomain = liveDomains.rogmovies || HARDCODED_FALLBACKS.rogmovies || 'https://rogmovies.rest';
-        const topDomain = liveDomains.topmovies || HARDCODED_FALLBACKS.topmovies || 'https://moviesleech.asia';
-
         if (!disabledList.includes('rogmovies')) {
           rawPromises.push(searchRogMoviesRawCards(cleanQ, rogDomain, createController()));
         }
         if (!disabledList.includes('topmovies')) {
           rawPromises.push(searchTopMoviesRawCards(cleanQ, topDomain, createController()));
+        }
+      } else if (activeCat === 'hollywood') {
+        if (!disabledList.includes('vegamovies')) {
+          rawPromises.push(searchVegaMoviesRawCards(cleanQ, vegaDomain, createController()));
+        }
+        if (!disabledList.includes('moviesmod')) {
+          rawPromises.push(searchMoviesModRawCards(cleanQ, moviesModDomain, createController()));
+        }
+      } else if (activeCat === 'indian') {
+        if (!disabledList.includes('rogmovies')) {
+          rawPromises.push(searchRogMoviesRawCards(cleanQ, rogDomain, createController()));
+        }
+        if (!disabledList.includes('topmovies')) {
+          rawPromises.push(searchTopMoviesRawCards(cleanQ, topDomain, createController()));
+        }
+      } else if (activeCat === 'anime') {
+        if (!disabledList.includes('vegamovies')) {
+          rawPromises.push(searchVegaMoviesRawCards(cleanQ, vegaDomain, createController()));
+        }
+        if (!disabledList.includes('moviesmod')) {
+          rawPromises.push(searchMoviesModRawCards(cleanQ, moviesModDomain, createController()));
+        }
+      } else if (activeCat === 'asian') {
+        if (!disabledList.includes('vegamovies')) {
+          rawPromises.push(searchVegaMoviesRawCards(cleanQ, vegaDomain, createController()));
+        }
+        if (!disabledList.includes('moviesmod')) {
+          rawPromises.push(searchMoviesModRawCards(cleanQ, moviesModDomain, createController()));
+        }
+        if (!disabledList.includes('rogmovies')) {
+          rawPromises.push(searchRogMoviesRawCards(cleanQ, rogDomain, createController()));
         }
       }
 
@@ -485,35 +526,30 @@ export default function DownloaderScreen({
         {isSearching && <ActivityIndicator size="small" color="#FFE500" />}
       </View>
 
-      {/* ── SEGMENTED CATEGORY TABS ── */}
-      <View style={styles.categoryRow}>
-        <TouchableOpacity
-          style={[styles.categoryBtn, category === 'hollywood' && styles.categoryBtnActive]}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setCategory('hollywood');
-            if (query) handleStartScrape(query, 'hollywood');
-          }}
-          activeOpacity={0.8}
+      {/* ── HORIZONTAL CATEGORY TABS (ALL, HOLLYWOOD, INDIAN, ANIME, ASIAN) ── */}
+      <View style={styles.categoryWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryScrollContent}
         >
-          <Text style={[styles.categoryBtnText, category === 'hollywood' && styles.categoryBtnTextActive]}>
-            HOLLYWOOD
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.categoryBtn, category === 'bollywood' && styles.categoryBtnActive]}
-          onPress={() => {
-            triggerSelectionHaptic();
-            setCategory('bollywood');
-            if (query) handleStartScrape(query, 'bollywood');
-          }}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.categoryBtnText, category === 'bollywood' && styles.categoryBtnTextActive]}>
-            BOLLYWOOD
-          </Text>
-        </TouchableOpacity>
+          {CATEGORIES.map((cat) => (
+            <TouchableOpacity
+              key={cat.key}
+              style={[styles.categoryBtn, category === cat.key && styles.categoryBtnActive]}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setCategory(cat.key);
+                if (query) handleStartScrape(query, cat.key);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.categoryBtnText, category === cat.key && styles.categoryBtnTextActive]}>
+                {cat.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
       {/* ── SEARCH BAR ── */}
@@ -879,16 +915,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1.5,
   },
-  categoryRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
+  categoryWrap: {
     paddingVertical: 8,
+  },
+  categoryScrollContent: {
+    paddingHorizontal: 16,
     gap: 8,
   },
   categoryBtn: {
-    flex: 1,
+    paddingHorizontal: 14,
     paddingVertical: 7,
     alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 6,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',

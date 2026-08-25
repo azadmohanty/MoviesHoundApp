@@ -157,7 +157,7 @@ export function parseTopMoviesArticle(html: string, articleUrl: string = '', sit
       const btnText = cleanText(l[2]);
 
       if (!href.startsWith('http') || href.includes('imdb.com') || href.includes('telegram') || href.includes('category') || href.includes('size')) return;
-      if (!/modpro|vcloud|fastdl|hubcloud|drive\.google|nexdrive|links/i.test(href) && !/download|episode|batch|zip/i.test(btnText)) return;
+      if (!/modpro|leechpro|vcloud|fastdl|hubcloud|drive\.google|nexdrive|links/i.test(href) && !/download|episode|batch|zip/i.test(btnText)) return;
 
       const btnQuality = (btnText.match(/\b(2160p|4k|1080p|720p|480p|2k)\b/i) || [])[1];
       const qualityLabel = normalizeQuality(headerQuality || btnQuality || '720p');
@@ -306,7 +306,7 @@ export async function resolveTopMoviesLocker(
   try {
     let currentUrl = targetUrl;
 
-    if (currentUrl.includes('modpro.blog')) {
+    if (currentUrl.includes('modpro.blog') || currentUrl.includes('leechpro.blog')) {
       try {
         const res = await fetch(currentUrl, {
           signal,
