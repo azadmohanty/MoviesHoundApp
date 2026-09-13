@@ -151,7 +151,8 @@ export const resolveStreamUrl = async (
         mediaType === 'tv' ? 'tv' : 'movie',
         season,
         episode,
-        preferredLanguage
+        preferredLanguage,
+        year
       );
       if (mbStream && mbStream.url && mbStream.url.startsWith('http')) {
         return {

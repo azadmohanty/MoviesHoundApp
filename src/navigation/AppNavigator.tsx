@@ -3,11 +3,12 @@ import { View, Text, TouchableOpacity, StyleSheet, BackHandler } from 'react-nat
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from '../screens/HomeScreen';
+import OttStreamScreen from '../screens/OttStreamScreen';
 import SwipeScreen from '../screens/SwipeScreen';
 import DownloaderScreen from '../screens/DownloaderScreen';
 import MeScreen from '../screens/MeScreen';
 
-export type TabType = 'home' | 'swipe' | 'downloader' | 'me';
+export type TabType = 'home' | 'stream' | 'swipe' | 'downloader' | 'me';
 
 import { triggerSelectionHaptic } from '../utils/HapticsHelper';
 
@@ -72,6 +73,9 @@ export default function AppNavigator() {
         <View style={[StyleSheet.absoluteFillObject, activeTab !== 'home' && { display: 'none' }]}>
           <HomeScreen onNavigateToDownloader={handleNavigateToDownloader} />
         </View>
+        <View style={[StyleSheet.absoluteFillObject, activeTab !== 'stream' && { display: 'none' }]}>
+          <OttStreamScreen />
+        </View>
         <View style={[StyleSheet.absoluteFillObject, activeTab !== 'swipe' && { display: 'none' }]}>
           <SwipeScreen onNavigateToDownloader={handleNavigateToDownloader} />
         </View>
@@ -113,7 +117,28 @@ export default function AppNavigator() {
           </Text>
         </TouchableOpacity>
 
-        {/* Tab 2: SWIPE */}
+        {/* Tab 2: STREAM */}
+        <TouchableOpacity
+          style={styles.tabItem}
+          onPress={() => switchTab('stream')}
+          activeOpacity={0.7}
+        >
+          <Ionicons
+            name={activeTab === 'stream' ? 'play-circle' : 'play-circle-outline'}
+            size={22}
+            color={activeTab === 'stream' ? '#00e5ff' : 'rgba(255, 255, 255, 0.4)'}
+          />
+          <Text
+            style={[
+              styles.tabLabel,
+              activeTab === 'stream' && { color: '#00e5ff', fontWeight: '800' },
+            ]}
+          >
+            STREAM
+          </Text>
+        </TouchableOpacity>
+
+        {/* Tab 3: SWIPE */}
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => switchTab('swipe')}

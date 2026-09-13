@@ -1,23 +1,33 @@
+/**
+ * 🎬 MovieBox Main Stream Resolver for HoloGram (Server 2)
+ * Pure REST Client with 3-Gate Deterministic Validation & Multi-Language Audio Mapping
+ */
+
+import { movieboxService, MovieBoxStreamSource } from '../services/movieboxService';
+
 export type MovieBoxStream = {
   url: string;
   resolution: number;
   qualityLabel: string;
   language?: string;
   availableLanguages?: string[];
+  sources?: MovieBoxStreamSource[];
 };
 
 // Helper: Normalize title by removing tags like [Hindi], S1-S4, (2024)
 const normalizeTitle = (str: string): string => {
   return str
     .toLowerCase()
-    .replace(/\[.*?\]|\(.*?\)/g, '') // remove [Hindi], (2024)
-    .replace(/\bs\d+(-\s*s?\d+)?\b/gi, '') // remove S1-S4, S2
-    .replace(/[^a-z0-9\s]/gi, '') // remove special punctuation
+    .replace(/\[.*?\]|\(.*?\)/g, '')
+    .replace(/\bs\d+(-\s*s?\d+)?\b/gi, '')
+    .replace(/[^a-z0-9\s]/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 };
 
-// Helper: Strict title similarity scoring
+/**
+ * Gate 1: Strict Title Similarity Check
+ */
 const checkTitleRelevance = (query: string, candidate: string): boolean => {
   const normQuery = normalizeTitle(query);
   const normCandidate = normalizeTitle(candidate);
@@ -25,250 +35,181 @@ const checkTitleRelevance = (query: string, candidate: string): boolean => {
   if (normQuery === normCandidate) return true;
   if (normCandidate.includes(normQuery) || normQuery.includes(normCandidate)) return true;
 
-  const queryWords = normQuery.split(' ').filter(w => w.length > 2);
-  const candidateWords = normCandidate.split(' ').filter(w => w.length > 2);
+  const queryWords = normQuery.split(' ').filter((w) => w.length > 2);
+  const candidateWords = normCandidate.split(' ').filter((w) => w.length > 2);
 
   if (queryWords.length === 0) return false;
 
-  // The first main word of the query MUST be present in candidate (prevents "Bhooth Bangla" -> "Baahubali 2 Bangla")
   const firstWord = queryWords[0];
   if (!normCandidate.includes(firstWord)) {
     return false;
   }
 
-  // Count matching words
-  const matches = queryWords.filter(qw => candidateWords.some(cw => cw.includes(qw) || qw.includes(cw)));
+  const matches = queryWords.filter((qw) =>
+    candidateWords.some((cw) => cw.includes(qw) || qw.includes(cw))
+  );
   const matchRatio = matches.length / queryWords.length;
 
   return matchRatio >= 0.65;
 };
 
-// Base64URL encoder helper for JWT claims
-const base64UrlEncode = (str: string): string => {
-  try {
-    const b64 = typeof btoa === 'function'
-      ? btoa(str)
-      : encodeURIComponent(str);
-    return b64.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-  } catch (e) {
-    return '';
-  }
+/**
+ * Detect Audio Language from MovieBox Subject Title
+ */
+const detectAudioLanguage = (title: string): string => {
+  const lower = title.toLowerCase();
+  if (lower.includes('[hindi]') || lower.includes('(hindi)')) return 'Hindi';
+  if (lower.includes('[tamil]') || lower.includes('(tamil)')) return 'Tamil';
+  if (lower.includes('[telugu]') || lower.includes('(telugu)')) return 'Telugu';
+  if (lower.includes('[english]') || lower.includes('(english)')) return 'English';
+  if (lower.includes('[korean]') || lower.includes('(korean)')) return 'Korean';
+  if (lower.includes('[japanese]') || lower.includes('(japanese)')) return 'Japanese';
+  return 'Original';
 };
 
-// Generates a fresh un-ratelimited guest JWT token for MovieBox
-const generateFreshMovieBoxToken = (): string => {
-  try {
-    const header = { alg: "HS256", typ: "JWT" };
-    const randomUid = Math.floor(1000000000000000000 + Math.random() * 9000000000000000000);
-    const now = Math.floor(Date.now() / 1000);
-    const payload = {
-      uid: randomUid,
-      atc: 1,
-      ext: String(now + 86400 * 30),
-      exp: now + 86400 * 365,
-      iat: now
-    };
-
-    const encHeader = base64UrlEncode(JSON.stringify(header));
-    const encPayload = base64UrlEncode(JSON.stringify(payload));
-    const signature = "wGXn0qL0KGc8OuQIKGXITgWpDagZpLhF5iEoH6BhxQw";
-
-    if (encHeader && encPayload) {
-      return `${encHeader}.${encPayload}.${signature}`;
-    }
-  } catch (e) {}
-
-  return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjM2NzAxNzY4NzYwNTM1NDg3OTIsImF0cCI6MywiZXh0IjoiMTc4NDc3NjQ2MiIsImV4cCI6MTc5MjU1MjQ2MiwiaWF0IjoxNzg0Nzc2MTYyfQ.wGXn0qL0KGc8OuQIKGXITgWpDagZpLhF5iEoH6BhxQw';
-};
-
+/**
+ * 🎯 Main MovieBox Stream Resolver with 3-Gate Validation
+ */
 export const resolveMovieBoxStream = async (
   title: string,
   mediaType: 'movie' | 'tv' = 'movie',
   season: number = 1,
   episode: number = 1,
-  preferredLanguage: string = 'Original'
+  preferredLanguage: string = 'Original',
+  year?: string
 ): Promise<MovieBoxStream | null> => {
-  const HOST = 'h5-api.aoneroom.com';
-  const BASE_URL = `https://${HOST}`;
-
   try {
-    console.log(`[MovieBox Resolver] Initiating search for: "${title}" (Type: ${mediaType} S${season}E${episode}, PrefLang: ${preferredLanguage})`);
+    console.log(
+      `[MovieBox Resolver] Initiating search for: "${title}" (${mediaType}, S${season}E${episode}, Year: ${year || 'N/A'}, PrefLang: ${preferredLanguage})`
+    );
 
-    // 1. Fetch Real Signed Auth Token from API to ensure valid signature
-    let token = '';
-    try {
-      const pkgRes = await fetch(`${BASE_URL}/wefeed-h5api-bff/app/get-latest-app-pkgs?app_name=moviebox`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      });
-
-      let xUser = '';
-      if (pkgRes.headers && typeof pkgRes.headers.get === 'function') {
-        xUser = pkgRes.headers.get('x-user') || pkgRes.headers.get('X-User') || '';
-      }
-      if (!xUser && (pkgRes.headers as any)?.map) {
-        xUser = (pkgRes.headers as any).map['x-user'] || (pkgRes.headers as any).map['X-User'] || '';
-      }
-
-      if (xUser) {
-        const tokenObj = typeof xUser === 'string' ? JSON.parse(xUser) : xUser;
-        token = tokenObj.token || tokenObj.Token || '';
-      }
-
-      if (!token) {
-        let cookieHeader = '';
-        if (pkgRes.headers && typeof pkgRes.headers.get === 'function') {
-          cookieHeader = pkgRes.headers.get('set-cookie') || pkgRes.headers.get('Set-Cookie') || '';
-        }
-        if (!cookieHeader && (pkgRes.headers as any)?.map) {
-          cookieHeader = (pkgRes.headers as any).map['set-cookie'] || (pkgRes.headers as any).map['Set-Cookie'] || '';
-        }
-        const match = String(cookieHeader).match(/token=([^;]+)/);
-        if (match) token = match[1];
-      }
-    } catch (e) {}
-
-    if (!token) {
-      token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjYyNzIwMzIwNTQ5NjY2MzkwNDAsImF0cCI6MywiZXh0IjoiMTc4NDg5ODQ3NCIsImV4cCI6MTc5MjY3NDQ3NCwiaWF0IjoxNzg0ODk4MTc0fQ.ee8k1EdiRvhHT7aLyxIhDWP4eALV0xfohco9ZHYBUbE';
-    }
-
-    console.log(`[MovieBox Step 1] Real Signed Token acquired: ${token.substring(0, 30)}...`);
-
-    const headers: Record<string, string> = {
-      'X-Client-Info': '{"timezone":"Africa/Nairobi"}',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    };
-
-    const subjectType = mediaType === 'tv' ? 2 : 1;
-    const cleanTitle = title.replace(/\s*\(\d{4}\)$/, '').trim();
-
-    // 2. Search Subject
-    const searchRes = await fetch(`${BASE_URL}/wefeed-h5api-bff/subject/search`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        keyword: cleanTitle,
-        page: 1,
-        perPage: 10,
-        subjectType
-      })
-    });
-
-    const searchData = await searchRes.json();
-    const items: any[] = searchData.data?.data?.items || searchData.data?.items || [];
-    console.log(`[MovieBox Step 2] Items found: ${items.length} for "${cleanTitle}"`);
-
-    if (!items || items.length === 0) return null;
-
-    // Filter relevant candidates strictly
-    const relevantCandidates = items.filter(item => item.title && checkTitleRelevance(cleanTitle, item.title));
-
-    if (relevantCandidates.length === 0) {
-      console.warn(`[MovieBox] 0 strictly relevant candidates found for: "${cleanTitle}"`);
+    // 1. Search MovieBox Catalog using movieboxService
+    const rawItems = await movieboxService.search(title.trim());
+    if (!rawItems || rawItems.length === 0) {
+      console.log(`[MovieBox Resolver] No search results found for: "${title}"`);
       return null;
     }
 
-    // Collect available languages across candidates
-    const availableLangs = new Set<string>(['Original']);
-    relevantCandidates.forEach(cand => {
-      if (cand.title.toLowerCase().includes('[hindi]') || cand.title.toLowerCase().includes('hindi')) {
-        availableLangs.add('Hindi');
-      }
-    });
+    // 2. Run 3-Gate Deterministic Validation
+    const validatedCandidates: {
+      item: any;
+      audioLang: string;
+      score: number;
+    }[] = [];
 
-    // Rank candidates by preferred language & TV season match
-    const seasonTag = `s${season}`;
-    const sortedCandidates = [...relevantCandidates].sort((a, b) => {
-      const aTitle = (a.title || '').toLowerCase();
-      const bTitle = (b.title || '').toLowerCase();
+    const normTarget = normalizeTitle(title);
 
-      // Language score
-      const aLangMatch = preferredLanguage === 'Hindi' ? aTitle.includes('hindi') : !aTitle.includes('hindi');
-      const bLangMatch = preferredLanguage === 'Hindi' ? bTitle.includes('hindi') : !bTitle.includes('hindi');
-      if (aLangMatch && !bLangMatch) return -1;
-      if (!aLangMatch && bLangMatch) return 1;
+    for (const item of rawItems) {
+      const itemTitle = item.title || '';
+      const itemYear = item.year;
 
-      // TV Season match score
-      if (mediaType === 'tv') {
-        const aSeasonMatch = aTitle.includes(seasonTag);
-        const bSeasonMatch = bTitle.includes(seasonTag);
-        if (aSeasonMatch && !bSeasonMatch) return -1;
-        if (!aSeasonMatch && bSeasonMatch) return 1;
+      // GATE 1: Title Relevance Gate
+      if (!checkTitleRelevance(title, itemTitle)) {
+        continue;
       }
 
-      return 0;
-    });
-
-    // Loop through sorted candidates to find first working stream link
-    for (let i = 0; i < Math.min(sortedCandidates.length, 5); i++) {
-      const candidate = sortedCandidates[i];
-      const subjectId = candidate.subjectId;
-      const candidateTitle = candidate.title || cleanTitle;
-
-      console.log(`[MovieBox Checking Candidate #${i + 1}]: "${candidateTitle}" (ID: ${subjectId})`);
-
-      // 3. Resolve Detail Path
-      let detailPath = '';
-      try {
-        const detailRes = await fetch(`https://h5.aoneroom.com/wefeed-h5-bff/web/post/list/subject?id=${subjectId}`, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      // GATE 2: Release Year Gate (allow ±1 year tolerance if year provided)
+      if (year && itemYear) {
+        const yNum = parseInt(year, 10);
+        const iyNum = parseInt(itemYear, 10);
+        if (!isNaN(yNum) && !isNaN(iyNum)) {
+          if (Math.abs(yNum - iyNum) > 1) {
+            continue; // Rejected by Year Gate
           }
-        });
-        const detailData = await detailRes.json();
-        detailPath = detailData.data?.data?.items?.[0]?.subject?.detailPath || detailData.data?.items?.[0]?.subject?.detailPath || '';
-      } catch (e) {}
-
-      if (!detailPath) {
-        detailPath = `${candidateTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${subjectId}`;
+        }
       }
 
-      // 4. Fetch Downloads with required FMovies Referer & Origin
-      const params = mediaType === 'tv' ? `subjectId=${subjectId}&se=${season}&ep=${episode}` : `subjectId=${subjectId}`;
-      const downloadHeaders: Record<string, string> = {
-        ...headers,
-        'Referer': `https://fmoviesunblocked.net/spa/videoPlayPage/movies/${detailPath}?id=${subjectId}&type=/movie/detail`,
-        'Origin': 'https://fmoviesunblocked.net'
-      };
-
-      const dlRes = await fetch(`${BASE_URL}/wefeed-h5api-bff/subject/download?${params}`, {
-        headers: downloadHeaders
-      });
-
-      const dlData = await dlRes.json();
-      const allDownloads = dlData.data?.data?.downloads || dlData.data?.downloads || [];
-
-      // Filter out VIP-locked / empty URL entries before picking best stream
-      const downloads = allDownloads.filter((d: any) => d.url && typeof d.url === 'string' && d.url.startsWith('http'));
-
-      if (downloads && downloads.length > 0) {
-        downloads.sort((a: any, b: any) => (b.resolution || 0) - (a.resolution || 0));
-        const bestStream = downloads[0];
-        const currentLang = candidateTitle.toLowerCase().includes('hindi') ? 'Hindi' : 'Original';
-
-        console.log(`[MovieBox SUCCESS] Matched candidate #${i + 1} "${candidateTitle}" (${currentLang}) -> Stream URL: ${bestStream.url.substring(0, 60)}...`);
-
-        return {
-          url: bestStream.url,
-          resolution: bestStream.resolution || 720,
-          qualityLabel: `MovieBox ${bestStream.resolution || 720}p MP4 (${currentLang.toUpperCase()})`,
-          language: currentLang,
-          availableLanguages: Array.from(availableLangs)
-        };
-      } else if (allDownloads.length > 0) {
-        console.warn(`[MovieBox] Candidate "${candidateTitle}" had ${allDownloads.length} downloads but all have empty/VIP-locked URLs. Trying next candidate...`);
+      // GATE 3: Media Type Gate
+      if (mediaType === 'movie') {
+        if (!itemTitle.includes('S1') && (itemTitle.includes('S2') || itemTitle.includes('S3') || itemTitle.includes('S4'))) {
+          continue;
+        }
       }
+
+      // Score Candidate
+      let score = 0;
+      const normItem = normalizeTitle(itemTitle);
+      if (normTarget === normItem) score += 50;
+      else score += 30;
+
+      if (year && itemYear && year === itemYear) score += 20;
+
+      const audioLang = detectAudioLanguage(itemTitle);
+      validatedCandidates.push({ item, audioLang, score });
     }
 
-    console.warn(`[MovieBox] 0 stream links found across search candidates for: "${cleanTitle}"`);
-    return null;
-  } catch (e: any) {
-    console.error('[MovieBox Error Exception Trace]:', e.message || e);
+    if (validatedCandidates.length === 0) {
+      console.log(`[MovieBox Resolver] All candidates rejected by 3-Gate Validation for: "${title}"`);
+      return null;
+    }
+
+    // 3. Audio Language Mapping
+    const availableLanguages = Array.from(new Set(validatedCandidates.map((c) => c.audioLang)));
+
+    let selectedCandidate = validatedCandidates.find(
+      (c) => c.audioLang.toLowerCase() === preferredLanguage.toLowerCase()
+    );
+
+    if (!selectedCandidate) {
+      validatedCandidates.sort((a, b) => b.score - a.score);
+      selectedCandidate = validatedCandidates[0];
+    }
+
+    const matchedItem = selectedCandidate.item;
+    let targetSubjectId = matchedItem.subject_id;
+    const detailPath = matchedItem.slug;
+
+    // Check if the item's detail has explicit dubs matching preferredLanguage
+    try {
+      const detail = await movieboxService.getDetail(detailPath);
+      if (detail?.dubs && detail.dubs.length > 0) {
+        const matchedDub = detail.dubs.find(
+          (d) =>
+            d.language_name.toLowerCase().includes(preferredLanguage.toLowerCase()) ||
+            (preferredLanguage.toLowerCase() === 'original' && d.is_original)
+        );
+        if (matchedDub) {
+          targetSubjectId = matchedDub.subject_id;
+          console.log(`[MovieBox Resolver] Switched to specific dub subject ID: ${targetSubjectId} (${matchedDub.language_name})`);
+        }
+      }
+    } catch {
+      // ignore detail dub lookup error
+    }
+
+    console.log(
+      `[MovieBox Resolver] ✅ 100% Match Found: "${matchedItem.title}" (ID: ${targetSubjectId}, Lang: ${selectedCandidate.audioLang})`
+    );
+
+    // 4. Resolve Direct Stream Sources
+    const streamRes = await movieboxService.getStreamSources(targetSubjectId, detailPath, season, episode);
+    const sources = streamRes.sources || [];
+
+    if (sources.length === 0) {
+      console.log(`[MovieBox Resolver] No streams returned for S${season}E${episode}`);
+      return null;
+    }
+
+    // Prioritize 1080p, then 720p, then highest available
+    let bestStream = sources.find((s) => s.resolution === '1080p');
+    if (!bestStream) bestStream = sources.find((s) => s.resolution === '720p');
+    if (!bestStream) bestStream = sources[0];
+
+    const streamUrl = bestStream?.url;
+    if (!streamUrl) return null;
+
+    const resNumber = parseInt(bestStream?.resolution || '1080', 10) || 1080;
+
+    return {
+      url: streamUrl,
+      resolution: resNumber,
+      qualityLabel: `MOVIEBOX (${bestStream?.resolution || '1080p'} MP4)`,
+      language: selectedCandidate.audioLang,
+      availableLanguages,
+      sources,
+    };
+  } catch (error) {
+    console.warn('[MovieBox Resolver] Unexpected error:', error);
     return null;
   }
 };
