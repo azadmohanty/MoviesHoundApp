@@ -11,16 +11,13 @@ on:
         options:
           - debug
           - release
-  push:
-    paths:
-      - 'HoloDown/**'
-      - '.github/workflows/build-holodown.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=\"-Xmx4096m -XX:MaxMetaspaceSize=1024m\""
 
     steps:
       - name: Checkout repository
@@ -40,11 +37,11 @@ jobs:
       - name: Build HoloDown APK
         working-directory: HoloDown
         run: |
-          chmod +x gradlew || true
+          chmod +x gradlew
           if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
-            gradle assembleRelease --stacktrace || ./gradlew assembleRelease --stacktrace
+            ./gradlew assembleRelease --no-daemon --stacktrace
           else
-            gradle assembleDebug --stacktrace || ./gradlew assembleDebug --stacktrace
+            ./gradlew assembleDebug --no-daemon --stacktrace
           fi
 
       - name: Upload HoloDown APK Artifact
@@ -52,4 +49,5 @@ jobs:
         with:
           name: HoloDown-${{ github.event.inputs.build_type || 'debug' }}
           path: HoloDown/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
           retention-days: 7
