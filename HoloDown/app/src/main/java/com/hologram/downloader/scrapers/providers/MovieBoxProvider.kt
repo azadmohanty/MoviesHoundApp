@@ -1,5 +1,6 @@
 package com.hologram.downloader.scrapers.providers
 
+import com.hologram.downloader.data.models.DownloadTask
 import com.hologram.downloader.scrapers.base.BaseExtractor
 import com.hologram.downloader.scrapers.base.ScrapedArticle
 import com.hologram.downloader.scrapers.base.ScrapedOption
