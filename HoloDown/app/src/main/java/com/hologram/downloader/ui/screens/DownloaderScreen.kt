@@ -102,9 +102,8 @@ fun DownloaderScreen(
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(bottom = 10.dp)
                 ) {
-                    items(CategoryType.values()) { cat ->
+                    items(CategoryType.entries) { cat ->
                         val isSelected = category == cat
                         Box(
                             modifier = Modifier

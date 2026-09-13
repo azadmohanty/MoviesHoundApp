@@ -280,13 +280,11 @@ fun CinemaDetailSheet(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.padding(bottom = 20.dp)
                     ) {
-                        items(episodeCount) { index ->
+                        items(count = episodeCount) { index ->
                             val epNum = index + 1
                             val isSelected = selectedEpisode == epNum
                             Box(
