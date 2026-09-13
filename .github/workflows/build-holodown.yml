@@ -6,7 +6,7 @@ on:
       build_type:
         description: 'Choose Build Type (debug / release)'
         required: true
-        default: 'debug'
+        default: 'release'
         type: choice
         options:
           - debug
@@ -16,8 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-      GRADLE_OPTS: "-Dorg.gradle.jvmargs=\"-Xmx4096m -XX:MaxMetaspaceSize=1024m\""
+      GRADLE_OPTS: "-Dfile.encoding=UTF-8"
 
     steps:
       - name: Checkout repository

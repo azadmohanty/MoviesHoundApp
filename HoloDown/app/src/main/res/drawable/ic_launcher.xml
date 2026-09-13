@@ -1,27 +1,5 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="#0D0E15"
-        android:pathData="M0,0h108v108h-108z" />
-    <group
-        android:scaleX="2.5"
-        android:scaleY="2.5"
-        android:translateX="36.5"
-        android:translateY="35">
-        <!-- Floating squares -->
-        <path android:fillColor="#6366F1" android:pathData="M2,0h1v1h-1z M10,0h1v1h-1z M1,1h2v1h-2z M10,1h2v1h-2z" />
-        <!-- Antennae -->
-        <path android:fillColor="#818CF8" android:pathData="M4,2h1v1h-1z M9,2h1v1h-1z" />
-        <!-- Head -->
-        <path android:fillColor="#6366F1" android:pathData="M5,3h4v1h-4z M4,4h6v1h-6z M3,5h2v1h-2z M6,5h2v1h-2z M9,5h2v1h-2z" />
-        <!-- Face and body -->
-        <path android:fillColor="#6366F1" android:pathData="M2,6h10v1h-10z M1,7h2v1h-2z M4,7h6v1h-6z M11,7h2v1h-2z M1,8h2v1h-2z M4,8h1v1h-1z M9,8h1v1h-1z M11,8h2v1h-2z" />
-        <!-- Jaw & chin -->
-        <path android:fillColor="#6366F1" android:pathData="M4,9h1v1h-1z M9,9h1v1h-1z M3,10h1v1h-1z M10,10h1v1h-1z" />
-        <!-- Crosses -->
-        <path android:fillColor="#818CF8" android:pathData="M2,11h1v1h-1z M10,11h1v1h-1z M1,12h3v1h-3z M9,12h3v1h-3z M0,13h5v1h-5z M8,13h5v1h-5z M1,14h3v1h-3z M9,14h3v1h-3z" />
-    </group>
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

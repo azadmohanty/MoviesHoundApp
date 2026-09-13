@@ -150,7 +150,7 @@ fun ScrapedOptionCard(
                 OutlinedButton(
                     onClick = onSendTo1DM,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                    border = ButtonDefaults.outlinedButtonBorder.copy(brush = androidx.compose.ui.graphics.SolidColor(SubtleBorder)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SubtleBorder),
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                     modifier = Modifier.weight(1f)

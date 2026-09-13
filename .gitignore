@@ -8,8 +8,10 @@ node_modules/
 dist/
 web-build/
 
-# Native
+# Native & Gradle
 .kotlin/
+.gradle/
+**/build/
 *.orig.*
 *.jks
 *.p8

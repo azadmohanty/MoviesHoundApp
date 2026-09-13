@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hologram.downloader.scrapers.base.ScrapedArticle
 import com.hologram.downloader.ui.components.CinemaDetailSheet
+import com.hologram.downloader.ui.components.HoloDownLogo
 import com.hologram.downloader.ui.components.MediaCard
 import com.hologram.downloader.ui.theme.*
 import com.hologram.downloader.ui.viewmodel.HomeViewModel
