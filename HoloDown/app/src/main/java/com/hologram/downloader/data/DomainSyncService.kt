@@ -20,7 +20,7 @@ object DomainSyncService {
         force: Boolean = false,
         onVegaUpdated: (String) -> Unit = {},
         onMoviesModUpdated: (String) -> Unit = {}
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): Map<String, String> = withContext(Dispatchers.IO) {
         val storage = StorageHelper(context)
         val lastSync = storage.getLastDomainsSyncTimestamp()
         val now = System.currentTimeMillis()
@@ -30,7 +30,10 @@ object DomainSyncService {
             val currentPrefs = storage.getPreferences()
             if (currentPrefs.customVegaDomain.isNotBlank()) onVegaUpdated(currentPrefs.customVegaDomain)
             if (currentPrefs.customMoviesModDomain.isNotBlank()) onMoviesModUpdated(currentPrefs.customMoviesModDomain)
-            return@withContext true
+            return@withContext mapOf(
+                "vegamovies" to currentPrefs.customVegaDomain,
+                "moviesmod" to currentPrefs.customMoviesModDomain
+            )
         }
 
         try {
@@ -40,8 +43,14 @@ object DomainSyncService {
                 .build()
 
             BaseExtractor.sharedOkHttpClient.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return@withContext false
-                val body = res.body?.string() ?: return@withContext false
+                if (!res.isSuccessful) {
+                    val currentPrefs = storage.getPreferences()
+                    return@withContext mapOf(
+                        "vegamovies" to currentPrefs.customVegaDomain,
+                        "moviesmod" to currentPrefs.customMoviesModDomain
+                    )
+                }
+                val body = res.body?.string() ?: return@withContext emptyMap()
                 val json = JSONObject(body)
 
                 val vega = json.optString("vegamovies")
@@ -59,10 +68,11 @@ object DomainSyncService {
                 }
                 storage.savePreferences(updated)
                 storage.setDomainsSyncTimestamp(now)
-                true
+                mapOf("vegamovies" to updated.customVegaDomain, "moviesmod" to updated.customMoviesModDomain)
             }
         } catch (_: Exception) {
-            false
+            val currentPrefs = storage.getPreferences()
+            mapOf("vegamovies" to currentPrefs.customVegaDomain, "moviesmod" to currentPrefs.customMoviesModDomain)
         }
     }
 }

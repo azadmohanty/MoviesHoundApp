@@ -26,6 +26,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -1144,14 +1146,12 @@ fun ProviderOptionCard(
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER EXTENSION: DRAW LEFT BORDER ONLY
 // ─────────────────────────────────────────────────────────────────────────────
-fun Modifier.drawLeftBorder(width: androidx.compose.ui.unit.Dp, color: Color) = this.then(
-    androidx.compose.ui.draw.drawBehind {
-        val strokeWidth = width.toPx()
-        drawLine(
-            color = color,
-            start = androidx.compose.ui.geometry.Offset(strokeWidth / 2, 0f),
-            end = androidx.compose.ui.geometry.Offset(strokeWidth / 2, size.height),
-            strokeWidth = strokeWidth
-        )
-    }
-)
+fun Modifier.drawLeftBorder(width: androidx.compose.ui.unit.Dp, color: Color): Modifier = this.drawBehind {
+    val strokeWidth = width.toPx()
+    drawLine(
+        color = color,
+        start = Offset(strokeWidth / 2f, 0f),
+        end = Offset(strokeWidth / 2f, this@drawBehind.size.height),
+        strokeWidth = strokeWidth
+    )
+}

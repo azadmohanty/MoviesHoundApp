@@ -16,9 +16,16 @@ class ScraperEngine(
 ) {
     val providers: List<ScraperProvider> = listOf(vegaProvider, moviesModProvider)
 
-    fun updateDomains(vega: String? = null, moviesMod: String? = null) {
-        if (!vega.isNullOrBlank()) vegaProvider.baseUrl = vega
-        if (!moviesMod.isNullOrBlank()) moviesModProvider.baseUrl = moviesMod
+    fun updateDomains(
+        vega: String? = null,
+        moviesMod: String? = null,
+        vegamovies: String? = null,
+        moviesmod: String? = null
+    ) {
+        val finalVega = vega ?: vegamovies
+        val finalMoviesMod = moviesMod ?: moviesmod
+        if (!finalVega.isNullOrBlank()) vegaProvider.baseUrl = finalVega
+        if (!finalMoviesMod.isNullOrBlank()) moviesModProvider.baseUrl = finalMoviesMod
     }
 
     suspend fun searchAll(
@@ -111,5 +118,17 @@ class ScraperEngine(
         }
 
         option.lockerUrl
+    }
+
+    suspend fun fetchEpisodes(
+        portalUrl: String,
+        siteKey: String
+    ): List<com.hologram.downloader.scrapers.base.SeriesEpisodeItem> = withContext(Dispatchers.IO) {
+        val provider = providers.find { it.siteKey.equals(siteKey, ignoreCase = true) } ?: vegaProvider
+        try {
+            provider.fetchEpisodes(portalUrl)
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 }
