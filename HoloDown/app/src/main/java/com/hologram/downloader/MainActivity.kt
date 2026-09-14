@@ -20,10 +20,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.hologram.downloader.data.DomainSyncService
 import com.hologram.downloader.scrapers.ScraperEngine
 import com.hologram.downloader.scrapers.base.ScrapedArticle
-import com.hologram.downloader.service.DownloadManager
-import com.hologram.downloader.service.DownloadService
 import com.hologram.downloader.ui.screens.DownloaderScreen
 import com.hologram.downloader.ui.screens.HomeScreen
 import com.hologram.downloader.ui.screens.MeScreen
@@ -34,30 +34,28 @@ import com.hologram.downloader.ui.theme.HoloDownTheme
 import com.hologram.downloader.ui.viewmodel.DownloaderViewModel
 import com.hologram.downloader.ui.viewmodel.HomeViewModel
 import com.hologram.downloader.ui.viewmodel.MeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestNotificationPermission()
 
-        // Start Foreground Service
-        val serviceIntent = Intent(this, DownloadService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        val scraperEngine = ScraperEngine()
+
+        // Sync latest domains from GitHub with 90-min cache
+        lifecycleScope.launch(Dispatchers.IO) {
+            val domains = DomainSyncService.syncLatestDomainsFromGithub(applicationContext, force = false)
+            scraperEngine.updateDomains(
+                vegamovies = domains["vegamovies"],
+                moviesmod = domains["moviesmod"]
+            )
         }
 
-        val downloadManager = DownloadManager.getInstance(applicationContext)
-        val scraperEngine = ScraperEngine()
         val homeViewModel = HomeViewModel(scraperEngine = scraperEngine)
-        val downloaderViewModel = DownloaderViewModel(scraperEngine, downloadManager)
+        val downloaderViewModel = DownloaderViewModel(scraperEngine = scraperEngine)
         val meViewModel = MeViewModel(applicationContext, scraperEngine)
 
         setContent {
@@ -70,6 +68,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
 
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

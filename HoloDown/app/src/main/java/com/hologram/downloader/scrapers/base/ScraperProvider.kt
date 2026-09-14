@@ -14,6 +14,13 @@ data class ScrapedArticle(
     val isSeries: Boolean = false
 )
 
+data class SeriesEpisodeItem(
+    val episodeNumber: Int,
+    val episodeTitle: String,
+    val targetUrl: String,
+    val buttonText: String = ""
+)
+
 data class ScrapedOption(
     val id: String,
     val siteKey: String,
@@ -23,6 +30,7 @@ data class ScrapedOption(
     val codec: String = "x264",
     val fileSize: String = "Unknown",
     val audioTracks: String = "Original",
+    val contentType: String = "MOVIE", // "MOVIE", "SINGLE_EPISODE", "SEASON_BATCH_ZIP"
     val isSeries: Boolean = false,
     val seasonNumber: Int = 1,
     val episodeNumber: Int? = null,
@@ -36,10 +44,11 @@ data class ScrapedOption(
 interface ScraperProvider {
     val name: String
     val siteKey: String
-    val baseUrl: String
+    var baseUrl: String
 
     suspend fun search(query: String): List<ScrapedArticle>
     suspend fun getLatestReleases(page: Int = 1): List<ScrapedArticle>
     suspend fun parseArticleOptions(articleUrl: String): List<ScrapedOption>
+    suspend fun fetchEpisodes(portalUrl: String): List<SeriesEpisodeItem> = emptyList()
     suspend fun resolveDirectStream(option: ScrapedOption): String?
 }

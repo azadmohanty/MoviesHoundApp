@@ -123,7 +123,13 @@ class MoviesModProvider(
                     val epMatch = Regex("""(?:Episode|Ep|E)\s*(\d+)""", RegexOption.IGNORE_CASE).find(btnText)
                     val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
 
+                    val isZip = btnText.contains("zip", true) || btnText.contains("batch", true) || btnText.contains("pack", true)
+                    val contentType = if (isSeries) {
+                        if (isZip) "SEASON_BATCH_ZIP" else "SINGLE_EPISODE"
+                    } else "MOVIE"
+
                     val priority = when {
+                        isZip -> 90
                         href.contains("driveseed") -> 1
                         href.contains("hubcloud") -> 2
                         href.contains("fastdl") -> 3
@@ -140,6 +146,7 @@ class MoviesModProvider(
                             codec = codec,
                             fileSize = fileSize,
                             audioTracks = if (mainTitle.contains("hindi", true)) "Hindi Dub" else "Original",
+                            contentType = contentType,
                             isSeries = isSeries,
                             seasonNumber = seasonNum,
                             episodeNumber = epNum,
@@ -154,7 +161,40 @@ class MoviesModProvider(
         options.sortedBy { it.priorityScore }
     }
 
+    override suspend fun fetchEpisodes(portalUrl: String): List<com.hologram.downloader.scrapers.base.SeriesEpisodeItem> = withContext(Dispatchers.IO) {
+        val episodes = mutableListOf<com.hologram.downloader.scrapers.base.SeriesEpisodeItem>()
+        try {
+            val doc = fetchHtml(portalUrl, mapOf("Referer" to "$baseUrl/")) ?: return@withContext emptyList()
+
+            // Find all anchor links matching Episode / Ep / E
+            val links = doc.select("a")
+            for (l in links) {
+                val href = l.attr("href")
+                val text = cleanText(l.text())
+
+                val epMatch = Regex("""^(?:Episode|Ep|E)\s*0*(\d{1,3})""", RegexOption.IGNORE_CASE).find(text)
+                    ?: Regex("""(?:episode|ep|e)0*(\d{1,3})""", RegexOption.IGNORE_CASE).find(href)
+
+                if (epMatch != null && href.startsWith("http")) {
+                    val epNum = epMatch.groupValues[1].toIntOrNull() ?: continue
+                    if (episodes.none { it.episodeNumber == epNum }) {
+                        episodes.add(
+                            com.hologram.downloader.scrapers.base.SeriesEpisodeItem(
+                                episodeNumber = epNum,
+                                episodeTitle = "Episode ${if (epNum < 10) "0$epNum" else epNum.toString()}",
+                                targetUrl = href,
+                                buttonText = text.ifEmpty { "EP $epNum" }
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        episodes.sortedBy { it.episodeNumber }
+    }
+
     override suspend fun resolveDirectStream(option: ScrapedOption): String? = withContext(Dispatchers.IO) {
-        driveSeedExtractor.resolveDriveSeed(option.lockerUrl)
+        driveSeedExtractor.resolveDriveSeed(option.lockerUrl) ?: option.lockerUrl
     }
 }
+

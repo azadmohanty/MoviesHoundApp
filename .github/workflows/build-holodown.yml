@@ -1,6 +1,10 @@
 name: Build HoloDown APK
 
 on:
+  push:
+    paths:
+      - 'HoloDown/**'
+      - '.github/workflows/build-holodown.yml'
   workflow_dispatch:
     inputs:
       build_type:

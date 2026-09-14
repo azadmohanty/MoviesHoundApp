@@ -40,6 +40,8 @@ fun MeScreen(
     val prefs by viewModel.preferences.collectAsState()
     val watchlist by viewModel.watchlist.collectAsState()
     val searchHistory by viewModel.searchHistory.collectAsState()
+    val isSyncingDomains by viewModel.isSyncingDomains.collectAsState()
+    val syncStatus by viewModel.syncStatus.collectAsState()
 
     var showSettingsDialog by remember { mutableStateOf(false) }
 
@@ -206,6 +208,71 @@ fun MeScreen(
 
                     IconButton(onClick = { viewModel.pingAllDomains() }) {
                         Icon(Icons.Default.Refresh, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                // Physical GitHub Live Domains Sync Button
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = DarkSlateGlass),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .border(1.dp, SubtleBorder, RoundedCornerShape(10.dp))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Auto-Mirror Sync (ISP Bypass)",
+                                    color = TextPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Fetches live domains.json from GitHub · 90m Cache",
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
+                            }
+
+                            Button(
+                                onClick = { viewModel.syncLiveDomains() },
+                                enabled = !isSyncingDomains,
+                                colors = ButtonDefaults.buttonColors(containerColor = VegaYellow),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                if (isSyncingDomains) {
+                                    CircularProgressIndicator(
+                                        color = Color.Black,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        text = "SYNC NOW",
+                                        color = Color.Black,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!syncStatus.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = syncStatus!!,
+                                color = if (syncStatus!!.contains("failed", true)) AmberWarning else EmeraldGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
 

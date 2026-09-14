@@ -13,11 +13,26 @@ object DomainSyncService {
     private const val GITHUB_DOMAINS_URL =
         "https://raw.githubusercontent.com/azadmohanty/MoviesHoundApp/main/domains.json"
 
+    const val CACHE_DURATION_MS = 90 * 60 * 1000L // 90 minutes
+
     suspend fun syncLatestDomainsFromGithub(
         context: Context,
-        onVegaUpdated: (String) -> Unit,
-        onMoviesModUpdated: (String) -> Unit
-    ) = withContext(Dispatchers.IO) {
+        force: Boolean = false,
+        onVegaUpdated: (String) -> Unit = {},
+        onMoviesModUpdated: (String) -> Unit = {}
+    ): Boolean = withContext(Dispatchers.IO) {
+        val storage = StorageHelper(context)
+        val lastSync = storage.getLastDomainsSyncTimestamp()
+        val now = System.currentTimeMillis()
+
+        // 90-Minute cache check
+        if (!force && (now - lastSync < CACHE_DURATION_MS)) {
+            val currentPrefs = storage.getPreferences()
+            if (currentPrefs.customVegaDomain.isNotBlank()) onVegaUpdated(currentPrefs.customVegaDomain)
+            if (currentPrefs.customMoviesModDomain.isNotBlank()) onMoviesModUpdated(currentPrefs.customMoviesModDomain)
+            return@withContext true
+        }
+
         try {
             val req = Request.Builder()
                 .url(GITHUB_DOMAINS_URL)
@@ -25,16 +40,14 @@ object DomainSyncService {
                 .build()
 
             BaseExtractor.sharedOkHttpClient.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return@withContext
-                val body = res.body?.string() ?: return@withContext
+                if (!res.isSuccessful) return@withContext false
+                val body = res.body?.string() ?: return@withContext false
                 val json = JSONObject(body)
 
                 val vega = json.optString("vegamovies")
                 val mmod = json.optString("moviesmod")
 
-                val storage = StorageHelper(context)
                 val currentPrefs = storage.getPreferences()
-
                 var updated = currentPrefs
                 if (vega.isNotBlank()) {
                     updated = updated.copy(customVegaDomain = vega)
@@ -45,7 +58,11 @@ object DomainSyncService {
                     onMoviesModUpdated(mmod)
                 }
                 storage.savePreferences(updated)
+                storage.setDomainsSyncTimestamp(now)
+                true
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            false
+        }
     }
 }

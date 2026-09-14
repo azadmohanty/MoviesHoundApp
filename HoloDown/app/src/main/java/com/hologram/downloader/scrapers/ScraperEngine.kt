@@ -6,17 +6,20 @@ import com.hologram.downloader.scrapers.base.ScrapedArticle
 import com.hologram.downloader.scrapers.base.ScrapedOption
 import com.hologram.downloader.scrapers.base.ScraperProvider
 import com.hologram.downloader.scrapers.extractors.HeadlessWebViewSniffer
-import com.hologram.downloader.scrapers.providers.MovieBoxProvider
 import com.hologram.downloader.scrapers.providers.MoviesModProvider
 import com.hologram.downloader.scrapers.providers.VegaMoviesProvider
 import kotlinx.coroutines.*
 
 class ScraperEngine(
     val vegaProvider: VegaMoviesProvider = VegaMoviesProvider(),
-    val moviesModProvider: MoviesModProvider = MoviesModProvider(),
-    val movieBoxProvider: MovieBoxProvider = MovieBoxProvider()
+    val moviesModProvider: MoviesModProvider = MoviesModProvider()
 ) {
-    val providers: List<ScraperProvider> = listOf(vegaProvider, moviesModProvider, movieBoxProvider)
+    val providers: List<ScraperProvider> = listOf(vegaProvider, moviesModProvider)
+
+    fun updateDomains(vega: String? = null, moviesMod: String? = null) {
+        if (!vega.isNullOrBlank()) vegaProvider.baseUrl = vega
+        if (!moviesMod.isNullOrBlank()) moviesModProvider.baseUrl = moviesMod
+    }
 
     suspend fun searchAll(
         query: String,
@@ -28,13 +31,7 @@ class ScraperEngine(
     ): List<ScrapedArticle> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
 
-        val activeProviders = when (category) {
-            "indian" -> listOf(vegaProvider, moviesModProvider)
-            "hollywood" -> listOf(movieBoxProvider, vegaProvider, moviesModProvider)
-            "anime", "asian" -> listOf(movieBoxProvider, vegaProvider)
-            else -> providers
-        }
-
+        val activeProviders = providers
         val allResults = mutableListOf<ScrapedArticle>()
 
         withTimeoutOrNull(timeoutMs) {
@@ -60,7 +57,7 @@ class ScraperEngine(
                 queryImdbId = imdbId
             )
             article.copy(confidenceScore = score)
-        }.filter { it.confidenceScore >= 45 }
+        }.filter { it.confidenceScore >= 35 }
          .sortedByDescending { it.confidenceScore }
 
         validated
@@ -71,11 +68,9 @@ class ScraperEngine(
         try {
             val vDeferred = async { vegaProvider.getLatestReleases(page) }
             val mDeferred = async { moviesModProvider.getLatestReleases(page) }
-            val mbDeferred = async { movieBoxProvider.getLatestReleases(page) }
 
             list.addAll(vDeferred.await())
             list.addAll(mDeferred.await())
-            list.addAll(mbDeferred.await())
         } catch (_: Exception) {}
         list.shuffled()
     }
@@ -96,7 +91,7 @@ class ScraperEngine(
     ): String? = withContext(Dispatchers.IO) {
         val provider = providers.find { it.siteKey == option.siteKey } ?: vegaProvider
 
-        // Tier 1: Fast Path HTTP Resolver
+        // Tier 1: Fast Path HTTP Resolver (unmasks VCloud, FastDl, DriveSeed)
         try {
             val direct = provider.resolveDirectStream(option)
             if (!direct.isNullOrBlank()) {
@@ -104,8 +99,8 @@ class ScraperEngine(
             }
         } catch (_: Exception) {}
 
-        // Tier 2: Headless WebView Sniffer for JS timers/lockers
-        if (context != null && !option.lockerUrl.startsWith("mbox://")) {
+        // Tier 2: Headless WebView Sniffer fallback for JS timers/lockers
+        if (context != null) {
             try {
                 val sniffer = HeadlessWebViewSniffer(context)
                 val sniffed = sniffer.sniffMediaUrl(option.lockerUrl, timeoutMs)
@@ -115,6 +110,6 @@ class ScraperEngine(
             } catch (_: Exception) {}
         }
 
-        null
+        option.lockerUrl
     }
 }

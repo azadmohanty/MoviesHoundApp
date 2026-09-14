@@ -19,6 +19,13 @@ class StorageHelper(context: Context) {
         private const val KEY_TMDB_KEY = "tmdb_api_key"
         private const val KEY_VEGA_DOMAIN = "vega_domain"
         private const val KEY_MOVIESMOD_DOMAIN = "moviesmod_domain"
+        private const val KEY_DOMAINS_SYNC_TIMESTAMP = "domains_sync_timestamp"
+    }
+
+    fun getLastDomainsSyncTimestamp(): Long = prefs.getLong(KEY_DOMAINS_SYNC_TIMESTAMP, 0L)
+
+    fun setDomainsSyncTimestamp(ts: Long) {
+        prefs.edit().putLong(KEY_DOMAINS_SYNC_TIMESTAMP, ts).apply()
     }
 
     fun getPreferences(): UserPreferences {

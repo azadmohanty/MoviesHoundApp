@@ -4,10 +4,12 @@ import com.hologram.downloader.scrapers.base.BaseExtractor
 import com.hologram.downloader.scrapers.base.ScrapedArticle
 import com.hologram.downloader.scrapers.base.ScrapedOption
 import com.hologram.downloader.scrapers.base.ScraperProvider
+import com.hologram.downloader.scrapers.base.SeriesEpisodeItem
 import com.hologram.downloader.scrapers.extractors.FastDlExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.net.URLEncoder
 
 class VegaMoviesProvider(
     override var baseUrl: String = "https://new2.vegamovies.futbol"
@@ -24,7 +26,7 @@ class VegaMoviesProvider(
 
         // 1. Try search.php JSON endpoint
         try {
-            val jsonUrl = "$baseUrl/search.php?q=${java.net.URLEncoder.encode(query, "UTF-8")}&page=1"
+            val jsonUrl = "$baseUrl/search.php?q=${URLEncoder.encode(query, "UTF-8")}&page=1"
             val raw = fetchRaw(jsonUrl, mapOf("Referer" to "$baseUrl/"))
             if (!raw.isNullOrBlank()) {
                 val jsonObj = JSONObject(raw)
@@ -41,6 +43,7 @@ class VegaMoviesProvider(
                         val isSeries = title.contains("season", true) || title.contains("series", true) || title.contains("s0", true)
                         val sMatch = Regex("""\b(?:Season|S)\s*0*(\d{1,2})\b""", RegexOption.IGNORE_CASE).find(title)
                         val seasonNum = sMatch?.groupValues?.get(1)?.toIntOrNull()
+                        val audioMatch = Regex("""\{([^}]+)\}""").find(title) ?: Regex("""\[([A-Za-z0-9\s.+~-]+Audio|[A-Za-z0-9\s.+~-]+Hindi[^\]]*)\]""", RegexOption.IGNORE_CASE).find(title)
 
                         results.add(
                             ScrapedArticle(
@@ -51,6 +54,7 @@ class VegaMoviesProvider(
                                 siteKey = siteKey,
                                 siteDisplayName = name,
                                 seasonTags = seasonNum?.let { listOf(it) },
+                                audioTracks = audioMatch?.groupValues?.get(1)?.trim(),
                                 isSeries = isSeries
                             )
                         )
@@ -62,7 +66,7 @@ class VegaMoviesProvider(
 
         // 2. Fallback: HTML page search
         try {
-            val htmlUrl = "$baseUrl/?s=${java.net.URLEncoder.encode(query, "UTF-8")}"
+            val htmlUrl = "$baseUrl/?s=${URLEncoder.encode(query, "UTF-8")}"
             val doc = fetchHtml(htmlUrl)
             doc?.select("article, div.post-item, div.movies-grid a")?.forEachIndexed { i, elem ->
                 val title = cleanText(elem.select("h2, img").attr("alt").ifEmpty { elem.text() }.replace("Download ", ""))
@@ -71,7 +75,10 @@ class VegaMoviesProvider(
 
                 if (href.isNotBlank() && title.isNotBlank()) {
                     val fullUrl = if (href.startsWith("http")) href else "$baseUrl$href"
-                    val isSeries = title.contains("season", true) || title.contains("series", true)
+                    val isSeries = title.contains("season", true) || title.contains("series", true) || title.contains("s0", true)
+                    val sMatch = Regex("""\b(?:Season|S)\s*0*(\d{1,2})\b""", RegexOption.IGNORE_CASE).find(title)
+                    val seasonNum = sMatch?.groupValues?.get(1)?.toIntOrNull()
+
                     results.add(
                         ScrapedArticle(
                             id = "vega-html-$i",
@@ -80,6 +87,7 @@ class VegaMoviesProvider(
                             posterUrl = thumb,
                             siteKey = siteKey,
                             siteDisplayName = name,
+                            seasonTags = seasonNum?.let { listOf(it) },
                             isSeries = isSeries
                         )
                     )
@@ -103,7 +111,7 @@ class VegaMoviesProvider(
                 val imgElem = elem.selectFirst("img")
                 val title = cleanText(imgElem?.attr("alt")?.ifEmpty { linkElem.text() } ?: linkElem.text())
                     .replace("Download ", "")
-                var poster = imgElem?.attr("src")?.ifEmpty { imgElem.attr("data-src") }
+                val poster = imgElem?.attr("src")?.ifEmpty { imgElem.attr("data-src") }
 
                 if (href.isNotBlank() && title.isNotBlank()) {
                     val fullUrl = if (href.startsWith("http")) href else "$baseUrl$href"
@@ -130,9 +138,10 @@ class VegaMoviesProvider(
         try {
             val doc = fetchHtml(articleUrl) ?: return@withContext emptyList()
             val mainTitle = cleanText(doc.select("h1").text())
-            val isSeries = mainTitle.contains("season", true) || mainTitle.contains("series", true) || mainTitle.contains("s0", true)
+            val isSeriesArticle = mainTitle.contains("season", true) || mainTitle.contains("series", true) ||
+                                  mainTitle.contains("s0", true) || articleUrl.contains("season", true)
 
-            // Parse quality sections (H2, H3, H4, H5)
+            // Quality section headings (H2, H3, H4, H5)
             val headings = doc.select("h2, h3, h4, h5").filter { h ->
                 val t = h.text().lowercase()
                 t.contains("480p") || t.contains("720p") || t.contains("1080p") || t.contains("2160p") || t.contains("4k")
@@ -144,7 +153,7 @@ class VegaMoviesProvider(
                 val codec = if (headingText.contains("hevc", true) || headingText.contains("x265", true) || headingText.contains("10bit", true)) "HEVC" else "x264"
                 val format = if (headingText.contains("bluray", true)) "BluRay" else "WEB-DL"
 
-                val sizeMatch = Regex("""\[([0-9.]+\s*(?:MB|GB))\]""", RegexOption.IGNORE_CASE).find(headingText)
+                val sizeMatch = Regex("""\[([0-9.]+\s*(?:MB|GB)(?:/[Ee])?)\]""", RegexOption.IGNORE_CASE).find(headingText)
                 val fileSize = sizeMatch?.groupValues?.get(1) ?: "Unknown"
 
                 val audio = if (headingText.contains("hindi", true) && headingText.contains("english", true)) "Dual Audio (Hindi + Eng)"
@@ -155,10 +164,10 @@ class VegaMoviesProvider(
                     ?: Regex("""\b(?:Season|S)\s*0*(\d{1,2})\b""", RegexOption.IGNORE_CASE).find(mainTitle)
                 val seasonNum = sMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-                // Find buttons in subsequent sibling elements
+                // Search next sibling elements for links
                 var sibling = heading.nextElementSibling()
                 var loop = 0
-                while (sibling != null && loop < 4 && !sibling.tagName().startsWith("h")) {
+                while (sibling != null && loop < 5 && !sibling.tagName().startsWith("h")) {
                     val anchors = sibling.select("a")
                     for (a in anchors) {
                         var href = a.attr("href")
@@ -174,10 +183,14 @@ class VegaMoviesProvider(
                             val epMatch = Regex("""(?:Episode|Ep|E)\s*(\d+)""", RegexOption.IGNORE_CASE).find(btnText)
                             val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
 
+                            val contentType = if (isSeriesArticle) {
+                                if (isZip) "SEASON_BATCH_ZIP" else "SINGLE_EPISODE"
+                            } else "MOVIE"
+
                             val priority = when {
                                 href.contains("vcloud") || href.contains("v-cloud") -> 1
                                 href.contains("fastdl") || href.contains("g-direct") -> 2
-                                isZip -> 10
+                                isZip -> 90
                                 else -> 5
                             }
 
@@ -191,7 +204,8 @@ class VegaMoviesProvider(
                                     codec = codec,
                                     fileSize = fileSize,
                                     audioTracks = audio,
-                                    isSeries = isSeries,
+                                    contentType = contentType,
+                                    isSeries = isSeriesArticle,
                                     seasonNumber = seasonNum,
                                     episodeNumber = epNum,
                                     episodeName = btnText.ifEmpty { "Download" },
@@ -209,7 +223,62 @@ class VegaMoviesProvider(
         options.sortedBy { it.priorityScore }
     }
 
+    /**
+     * Parse Episode lists from NexDrive/HubCloud/FastCloud portal pages
+     */
+    override suspend fun fetchEpisodes(portalUrl: String): List<SeriesEpisodeItem> = withContext(Dispatchers.IO) {
+        val episodes = mutableListOf<SeriesEpisodeItem>()
+        try {
+            val doc = fetchHtml(portalUrl, mapOf("Referer" to "$baseUrl/")) ?: return@withContext emptyList()
+
+            // Pattern 1: Heading-grouped episodes
+            val sections = doc.select("h3, h4, h5, div.episode-item, p")
+            for (sec in sections) {
+                val headerText = cleanText(sec.text())
+                val epMatch = Regex("""(?:Episodes?|Ep|E)\s*:?\s*0*(\d{1,3})""", RegexOption.IGNORE_CASE).find(headerText)
+                if (epMatch != null) {
+                    val epNum = epMatch.groupValues[1].toIntOrNull() ?: continue
+                    val anchor = sec.selectFirst("a") ?: sec.nextElementSibling()?.selectFirst("a")
+                    val href = anchor?.attr("href") ?: continue
+                    if (href.startsWith("http")) {
+                        episodes.add(
+                            SeriesEpisodeItem(
+                                episodeNumber = epNum,
+                                episodeTitle = "Episode $epNum",
+                                targetUrl = href,
+                                buttonText = cleanText(anchor.text())
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Pattern 2: Direct Anchor tags with Episode text
+            if (episodes.isEmpty()) {
+                doc.select("a").forEach { a ->
+                    val text = cleanText(a.text())
+                    val epMatch = Regex("""(?:Episode|Ep|E)\s*0*(\d{1,3})""", RegexOption.IGNORE_CASE).find(text)
+                    val href = a.attr("href")
+                    if (epMatch != null && href.startsWith("http")) {
+                        val epNum = epMatch.groupValues[1].toIntOrNull() ?: return@forEach
+                        if (episodes.none { it.episodeNumber == epNum }) {
+                            episodes.add(
+                                SeriesEpisodeItem(
+                                    episodeNumber = epNum,
+                                    episodeTitle = text,
+                                    targetUrl = href,
+                                    buttonText = text
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        episodes.sortedBy { it.episodeNumber }
+    }
+
     override suspend fun resolveDirectStream(option: ScrapedOption): String? = withContext(Dispatchers.IO) {
-        fastDlExtractor.resolveVCloud(option.lockerUrl)
+        fastDlExtractor.resolveVCloud(option.lockerUrl) ?: option.lockerUrl
     }
 }

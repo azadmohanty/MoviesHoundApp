@@ -79,12 +79,37 @@ class MeViewModel(
         }
     }
 
+    private val _isSyncingDomains = MutableStateFlow(false)
+    val isSyncingDomains: StateFlow<Boolean> = _isSyncingDomains.asStateFlow()
+
+    private val _syncStatus = MutableStateFlow<String?>(null)
+    val syncStatus: StateFlow<String?> = _syncStatus.asStateFlow()
+
+    fun syncLiveDomains() {
+        viewModelScope.launch {
+            _isSyncingDomains.value = true
+            _syncStatus.value = "Fetching live domains from GitHub..."
+            try {
+                val liveDomains = com.hologram.downloader.data.DomainSyncService.syncLatestDomainsFromGithub(context, force = true)
+                scraperEngine.updateDomains(
+                    vegamovies = liveDomains["vegamovies"],
+                    moviesmod = liveDomains["moviesmod"]
+                )
+                pingAllDomains()
+                _syncStatus.value = "Synced: Vega (${scraperEngine.vegaProvider.baseUrl}), MoviesMod (${scraperEngine.moviesModProvider.baseUrl})"
+            } catch (e: Exception) {
+                _syncStatus.value = "Sync failed: ${e.localizedMessage}"
+            } finally {
+                _isSyncingDomains.value = false
+            }
+        }
+    }
+
     fun pingAllDomains() {
         viewModelScope.launch {
             val domains = mapOf(
                 "VegaMovies" to scraperEngine.vegaProvider.baseUrl,
-                "MoviesMod" to scraperEngine.moviesModProvider.baseUrl,
-                "MovieBox" to "https://h5-api.aoneroom.com"
+                "MoviesMod" to scraperEngine.moviesModProvider.baseUrl
             )
 
             val pings = mutableMapOf<String, Long?>()
